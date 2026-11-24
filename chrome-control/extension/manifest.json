@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "minimum_chrome_version": "109",
   "name": "Chrome 网页控制",
-  "version": "1.4.0",
-  "description": "让本地 Agent 在你允许的网页上读取正文、点击和填写。",
+  "version": "1.4.1",
+  "description": "让本地 Agent 按标题或网址定位 Chrome 标签页，在后台打开并阅读你允许的网页。支持选中文字、滚动页面、点击按钮和填写表单，也能截取当前页面，对比操作前后的变化。",
   "icons": {
     "16": "icons/tab-pointer-16.png",
     "32": "icons/tab-pointer-32.png",
