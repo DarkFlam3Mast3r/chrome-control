@@ -11,7 +11,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "chrome-control/scripts"
 URL = "https://example.test/article?a=1&b=2#one"
 DOC = "document-41"
 OPEN = {"ok": True, "data": {"tabId": 41, "requestedUrl": URL, "siteShared": True}}
-READY = {"ok": True, "data": {"matched": True, "documentId": DOC, "url": URL}}
+SNAP = "snapshot-41"
 STUB = r"""
 $ErrorActionPreference = 'Stop'
 $log = Join-Path $PSScriptRoot 'calls.jsonl'
@@ -26,8 +26,10 @@ exit 0
 
 
 def chunk(text, offset, total, next_offset, **changed):
-    data = dict(url=URL, documentId=DOC, title="标题", source="article", text=text,
+    data = dict(url=URL, documentId=DOC, snapshotId=SNAP, title="标题", source="article", text=text,
                 offset=offset, total=total, nextOffset=next_offset)
+    if offset == 0:
+        data["matched"] = True
     return {"ok": True, "data": {**data, **changed}}
 
 
@@ -52,10 +54,9 @@ class ReadUrlTest(unittest.TestCase):
         for shell in ["powershell.exe", "pwsh.exe"]:
             with self.subTest(shell=shell):
                 prefix = "正" * 12000
-                replies = [OPEN, READY, chunk(prefix, 0, 12002, 12000), chunk("末段", 12000, 12002, None)]
+                replies = [OPEN, chunk(prefix, 0, 12002, 12000), chunk("末段", 12000, 12002, None)]
                 result, calls = self.run_reader(replies, shell=shell)
-                self.assertEqual(calls, [["open", URL], ["wait", "41", "ready"],
-                                         ["read", "41", "0", DOC], ["read", "41", "12000", DOC]])
+                self.assertEqual(calls, [["open", URL], ["read-start", "41"], ["read", "41", "12000", DOC, SNAP]])
                 self.assertEqual(result["data"]["text"], prefix + "末段")
                 self.assertEqual(result["data"]["url"], URL)
                 self.assertEqual(result["data"]["tabId"], 41)
@@ -66,35 +67,47 @@ class ReadUrlTest(unittest.TestCase):
             ([{"ok": False, "error": "REGISTRY_ACCESS_DENIED"}], "REGISTRY_ACCESS_DENIED", "open", None),
             ([{"ok": True, "data": {"tabId": 41, "siteShared": False}}], "SITE_NOT_SHARED", "open", 41),
             ([OPEN, {"ok": False, "error": "WAIT_TIMEOUT"}], "WAIT_TIMEOUT", "wait", 41),
-            ([OPEN, READY, {"ok": False, "error": "SITE_NOT_SHARED"}], "SITE_NOT_SHARED", "read", 41),
-            ([OPEN, READY, chunk("", 0, 0, None)], "NO_PAGE_TEXT", "read", 41),
+            ([OPEN, {"ok": False, "error": "CONTENT_NOT_READY", "detail": URL}], "CONTENT_NOT_READY", "wait", 41),
+            ([OPEN, chunk("首", 0, 2, 1), {"ok": False, "error": "SITE_NOT_SHARED"}], "SITE_NOT_SHARED", "read", 41),
+            ([OPEN, chunk("", 0, 0, None)], "NO_PAGE_TEXT", "read", 41),
         ]:
             with self.subTest(error=error, stage=stage):
                 result, calls = self.run_reader(replies)
                 self.assertEqual((result["error"], result["stage"], result.get("tabId")), (error, stage, tab))
                 self.assertEqual(len(calls), len(replies))
+                if error == "CONTENT_NOT_READY":
+                    self.assertEqual(result["detail"], URL)
+
+    def test_waits_for_expected_text_in_the_same_background_read(self):
+        value = "下半段的特定文字"
+        result, calls = self.run_reader([OPEN, chunk(value, 0, len(value), None, snapshotId=None)],
+                                        arguments=(URL, "-WaitText", value))
+        self.assertEqual(result["data"]["text"], value)
+        self.assertEqual(calls, [["open", URL], ["read-start", "41", value]])
+        self.assertNotIn("snapshotId", result["data"])
 
     def test_preserves_timestamp_text_literally(self):
         value = "2026-11-22T12:00:00Z"
         for shell in ["powershell.exe", "pwsh.exe"]:
             with self.subTest(shell=shell):
-                result, _ = self.run_reader([OPEN, READY, chunk(value, 0, len(value), None)], shell=shell)
+                result, _ = self.run_reader([OPEN, chunk(value, 0, len(value), None)], shell=shell)
                 self.assertEqual(result["data"]["text"], value)
 
     def test_rejects_changed_pages_and_broken_pagination(self):
         for second, error in [(chunk("尾", 1, 2, None, url=URL + "-other"), "PAGE_CHANGED"),
                               (chunk("尾", 1, 2, None, documentId="other"), "PAGE_CHANGED"),
+                              (chunk("尾", 1, 2, None, snapshotId="other"), "PAGE_CHANGED"),
                               (chunk("尾", 1, 3, 2), "PAGE_CHANGED"),
                               (chunk("", 1, 2, 1), "INVALID_PAGE_RESULT")]:
             with self.subTest(second=second):
-                result, calls = self.run_reader([OPEN, READY, chunk("首", 0, 2, 1), second])
+                result, calls = self.run_reader([OPEN, chunk("首", 0, 2, 1), second])
                 self.assertEqual(result["error"], error)
                 self.assertEqual(result["tabId"], 41)
                 self.assertNotIn("data", result)
-                self.assertEqual(len(calls), 4)
+                self.assertEqual(len(calls), 3)
 
     def test_arguments_cannot_add_browser_actions(self):
-        for args in [(URL, "--focus"), ("file:///C:/test",), ()]:
+        for args in [(URL, "--focus"), (URL, "--focus", "x"), (URL, "-WaitText", " "), ("file:///C:/test",), ()]:
             with self.subTest(arguments=args):
                 result, calls = self.run_reader([], arguments=args)
                 self.assertFalse(result["ok"])

@@ -22,21 +22,93 @@ export function runOnPage(command, expectedUrl, currentOnly = false) {
     return { matched: ready && (condition === "ready" || (condition === "text" ? found : !found)),
       condition, url: location.href };
   }
-  if (action === "read" || action === "select-text") {
-    const selectors = ["#js_content", "article", "main", "[role='main']", "body"];
-    let source, root, text = "";
-    for (source of selectors) {
+  function article(waitForContent) {
+    for (const source of ["#js_content", "article", "main", "[role='main']", "body"]) {
+      let root, text = "";
       for (const block of document.querySelectorAll(source)) {
         if (!visible(block)) continue;
         const candidate = block.innerText?.trim() || "";
-        if (candidate.length > text.length) { text = candidate; root = block; }
+        if (!root || candidate.length > text.length) { text = candidate; root = block; }
       }
-      if (text) break;
+      // An empty article can sit between a populated navigation bar and a footer.
+      if (text || (waitForContent && root)) return { source, root, text };
     }
-    if (action === "select-text") return selectText(root);
-    const end = Math.min(offset + 12000, text.length);
-    return { title: document.title, url: location.href, source, text: text.slice(offset, end),
-      offset, total: text.length, nextOffset: end < text.length ? end : null };
+    return { source: "body", text: "" };
+  }
+
+  function loadingMessage(text) {
+    if (text.length > 100) return false;
+    const words = text.trim().replace(/[\s.…。!！]+$/u, "");
+    return /^(?:loading(?:\s+(?:the\s+)?(?:article|content|page|data))?|please\s+wait)$/iu.test(words) ||
+      /^(?:(?:正在)?(?:加载|加載|載入)(?:正文|内容|內容|文章|页面|頁面)?(?:中)?(?:[，,\s]*[请請]稍[候等])?|[请請]稍[候等])$/u.test(words);
+  }
+
+  function notReadyReason(root, text) {
+    if (!text) return "NO_PAGE_TEXT";
+    if (root.closest('[aria-busy="true"]') || loadingMessage(text)) return "CONTENT_NOT_READY";
+    // A server-rendered headline may arrive before the actual paragraphs.
+    if (root.matches("article, #js_content, main, [role='main']")) {
+      const heading = root.querySelector("h1");
+      const title = heading && visible(heading) && heading.innerText.trim();
+      if (title && text.startsWith(title)) {
+        const rest = text.slice(title.length).trim();
+        if (!rest || loadingMessage(rest)) return "CONTENT_NOT_READY";
+      }
+    }
+    if (value && !text.includes(value)) return "EXPECTED_TEXT_MISSING";
+  }
+
+  if (action === "select-text") return selectText(article(false).root);
+  if (action === "read" || action === "read-start") {
+    const reads = globalThis.__codexChromeReads ??= new Map();
+    function release(id) {
+      clearTimeout(reads.get(id)?.timer);
+      reads.delete(id);
+    }
+    const now = Date.now();
+    for (const [id, saved] of reads) if (saved.expires <= now) release(id);
+    let id = command.snapshotId;
+    if (!id && offset > 0) {
+      // Older clients send only the offset. A unique continuation is unambiguous.
+      const matches = [...reads].filter(([, s]) => s.url === expectedUrl && s.nextOffset === offset);
+      if (matches.length > 1) return { error: "SNAPSHOT_REQUIRED" };
+      if (matches.length === 1) id = matches[0][0];
+    }
+    let saved;
+    if (id) {
+      saved = reads.get(id);
+      if (!saved) return { error: "SNAPSHOT_EXPIRED" };
+      if (saved.url !== expectedUrl) return { error: "PAGE_CHANGED" };
+    } else {
+      const starting = action === "read-start";
+      if (starting && document.readyState === "loading") return { matched: false, url: expectedUrl };
+      const { source, root, text } = article(starting);
+      if (starting) {
+        const reason = notReadyReason(root, text);
+        if (reason) return { matched: false, reason, url: expectedUrl };
+      }
+      saved = { title: document.title, url: expectedUrl, source, text };
+    }
+    let end = Math.min(offset + 12000, saved.text.length);
+    // A native messaging frame must contain complete UTF-8 characters.
+    const last = saved.text.charCodeAt(end - 1);
+    const next = saved.text.charCodeAt(end);
+    if (last >= 0xD800 && last <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) end--;
+    const nextOffset = end < saved.text.length ? end : null;
+    if (nextOffset !== null) {
+      if (!id) {
+        if (reads.size >= 8) return { error: "SNAPSHOT_LIMIT" };
+        id = [...crypto.getRandomValues(new Uint32Array(4))].map(n => n.toString(16).padStart(8, "0")).join("");
+        reads.set(id, saved);
+      }
+      clearTimeout(saved.timer);
+      saved.nextOffset = nextOffset;
+      saved.expires = now + 120000;
+      saved.timer = setTimeout(() => release(id), 120000);
+    } else if (id) release(id);
+    return { ...(action === "read-start" ? { matched: true } : {}), title: saved.title, url: saved.url,
+      source: saved.source, text: saved.text.slice(offset, end), offset, total: saved.text.length,
+      nextOffset, snapshotId: id ?? null };
   }
 
   function selectText(root) {

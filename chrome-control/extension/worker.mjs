@@ -1,4 +1,4 @@
-import { dispatch, forgetOtherOrigin, taskKey } from "./commands.mjs";
+import { dispatch, forgetOtherOrigin, pendingKey, taskKey } from "./commands.mjs";
 import { accessSettings, hostPattern, sharedSites, siteKey } from "./sites.mjs";
 
 let port;
@@ -36,6 +36,7 @@ function connect() {
         reply = { ok: true, data: await dispatch(chrome, message.command) };
       } catch (error) {
         reply = { ok: false, error: error.message };
+        if (error.detail) reply.detail = error.detail;
       }
       // A disconnected port cannot acknowledge an action. Never replay it.
       if (port === current) {
@@ -63,9 +64,11 @@ function connect() {
 
 chrome.runtime.onInstalled.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
-chrome.tabs.onRemoved.addListener(id => chrome.storage.session.remove(taskKey(id)));
-chrome.tabs.onActivated.addListener(({ tabId }) => chrome.storage.session.remove(taskKey(tabId)));
-chrome.tabs.onUpdated.addListener((id, info) => {
+const forgetTask = id => chrome.storage.session.remove([taskKey(id), pendingKey(id)]);
+chrome.tabs.onRemoved.addListener(forgetTask);
+chrome.tabs.onActivated.addListener(({ tabId }) => forgetTask(tabId));
+chrome.tabs.onUpdated.addListener(async (id, info) => {
+  if (info.url || info.status === "complete") await chrome.storage.session.remove(pendingKey(id));
   if (info.url) return forgetOtherOrigin(chrome, id, info.url);
 });
 chrome.permissions.onRemoved.addListener(async removed => {

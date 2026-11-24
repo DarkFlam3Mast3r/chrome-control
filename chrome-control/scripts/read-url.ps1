@@ -1,8 +1,9 @@
 # One background navigation and the reads for that document. The caller handles sandbox approval.
 $ErrorActionPreference = 'Stop'
 $chromeScript = Join-Path $PSScriptRoot 'chrome.ps1'
-if ($args.Count -ne 1) {
-    Write-Output '{"ok":false,"error":"USAGE","detail":"read-url.ps1 URL"}'
+if ($args.Count -ne 1 -and ($args.Count -ne 3 -or $args[1] -ine '-WaitText' -or
+    [string]::IsNullOrWhiteSpace($args[2]) -or $args[2].Length -gt 16000)) {
+    Write-Output '{"ok":false,"error":"USAGE","detail":"read-url.ps1 URL [-WaitText TEXT]"}'
     exit 2
 }
 $address = $null
@@ -35,16 +36,16 @@ try {
     if ($null -eq $chromeTabId) { throw 'INVALID_TAB' }
 
     $stage = 'wait'
-    $ready = Invoke-ChromeStep wait $chromeTabId ready
-    if (-not $ready.matched -or -not $ready.documentId -or -not $ready.url) { throw 'NO_PAGE_RESULT' }
+    $first = if ($args.Count -eq 3) { Invoke-ChromeStep read-start $chromeTabId $args[2] }
+             else { Invoke-ChromeStep read-start $chromeTabId }
+    if (-not $first.matched -or -not $first.documentId -or -not $first.url) { throw 'NO_PAGE_RESULT' }
 
     $stage = 'read'
-    $first = $null
     $body = [Text.StringBuilder]::new()
-    do {
-        $part = Invoke-ChromeStep read $chromeTabId $body.Length $ready.documentId
-        if ($part.documentId -cne $ready.documentId -or $part.url -cne $ready.url) { throw 'PAGE_CHANGED' }
-        if ($null -eq $first) { $first = $part }
+    $part = $first
+    while ($true) {
+        if ($part.documentId -cne $first.documentId -or $part.url -cne $first.url -or
+            $part.snapshotId -cne $first.snapshotId) { throw 'PAGE_CHANGED' }
         if ($part.title -cne $first.title -or $part.total -ne $first.total -or $part.source -cne $first.source) {
             throw 'PAGE_CHANGED'
         }
@@ -52,14 +53,18 @@ try {
             throw 'INVALID_PAGE_RESULT'
         }
         [void]$body.Append($part.text)
-        if ($null -ne $part.nextOffset -and ($part.nextOffset -ne $body.Length -or
-            $part.nextOffset -le $part.offset -or $part.nextOffset -ge $first.total)) { throw 'INVALID_PAGE_RESULT' }
-    } while ($null -ne $part.nextOffset)
+        if ($null -eq $part.nextOffset) { break }
+        if (-not $first.snapshotId -or $part.nextOffset -ne $body.Length -or
+            $part.nextOffset -le $part.offset -or $part.nextOffset -ge $first.total) { throw 'INVALID_PAGE_RESULT' }
+        $part = Invoke-ChromeStep read $chromeTabId $body.Length $first.documentId $first.snapshotId
+    }
     if ($body.Length -ne $first.total) { throw 'INVALID_PAGE_RESULT' }
     if ($body.Length -eq 0) { throw 'NO_PAGE_TEXT' }
 
     $first.text = $body.ToString()
     $first.nextOffset = $null
+    $first.PSObject.Properties.Remove('matched')
+    $first.PSObject.Properties.Remove('snapshotId')
     Add-Member -InputObject $first -NotePropertyName tabId -NotePropertyValue $chromeTabId
     ConvertTo-Json -Compress -Depth 4 -InputObject @{ ok = $true; data = $first }
 } catch {

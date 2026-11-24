@@ -2,9 +2,11 @@ import { accessSettings, hostPattern, isOrdinaryPage, sharedSites, siteAccess, s
 import { runOnPage } from "./page.mjs";
 import { captureViewport } from "./screenshot.mjs";
 
-const taskPageActions = new Set(["read", "controls", "wait", "select-text"]);
+const taskPageActions = new Set(["read", "read-start", "controls", "wait", "select-text"]);
 const actions = new Set([...taskPageActions, "click", "fill", "check", "select", "scroll", "screenshot"]);
 export const taskKey = tabId => "task:" + tabId;
+export const pendingKey = tabId => "opening:" + tabId;
+const opening = new Map();
 
 async function currentTab(api) {
   const [tab] = await api.tabs.query({ active: true, lastFocusedWindow: true });
@@ -24,7 +26,8 @@ async function listTabs(api) {
     if (await api.permissions.contains({ origins: [hostPattern(site)] })) allowed.add(site.origin);
   }
   const tasks = settings.allSites ? await api.storage.session.get(null) : {};
-  const origins = [...allowed, ...Object.values(tasks)];
+  const taskOrigins = Object.entries(tasks).filter(([key]) => key.startsWith("task:")).map(([, origin]) => origin);
+  const origins = [...allowed, ...taskOrigins];
   const patterns = [...new Set(origins.map(origin => hostPattern(new URL(origin))))];
   const candidates = patterns.length ? await api.tabs.query({ url: patterns }) : [];
   const tabs = candidates.filter(tab => {
@@ -43,8 +46,33 @@ async function listTabs(api) {
 async function openTab(api, command) {
   const url = webUrl(command.url);
   if (!url) throw new Error("WEB_URL_REQUIRED");
-  const access = await siteAccess(api, url, await accessSettings(api, [siteKey(url)]));
   const focus = command.action === "open" && command.focus === true;
+  if (focus) return findOrCreateTab(api, url, true);
+  // Serialize just the lookup and creation for this URL, never the navigation.
+  const previous = opening.get(url.href) ?? Promise.resolve();
+  const request = previous.catch(() => {}).then(() => findOrCreateTab(api, url, false));
+  opening.set(url.href, request);
+  try { return await request; }
+  finally { if (opening.get(url.href) === request) opening.delete(url.href); }
+}
+
+async function pendingTab(api, url, access) {
+  const records = await api.storage.session.get(null);
+  for (const [key, href] of Object.entries(records)) {
+    if (!key.startsWith("opening:") || href !== url.href) continue;
+    const id = Number(key.slice("opening:".length));
+    let tab;
+    try { tab = await api.tabs.get(id); }
+    catch (error) { if (!/No tab with id/i.test(error.message)) throw error; }
+    if (tab && !tab.incognito && tab.status === "loading" &&
+        (tab.pendingUrl ? tab.pendingUrl === href : !tab.url || tab.url === "about:blank" || tab.url === href) &&
+        (access !== "current-tab" || records[taskKey(id)] === url.origin)) return tab;
+    await api.storage.session.remove(key);
+  }
+}
+
+async function findOrCreateTab(api, url, focus) {
+  const access = await siteAccess(api, url, await accessSettings(api, [siteKey(url)]));
   const siteShared = access !== "none";
   if (siteShared) {
     const sameHost = await api.tabs.query({ url: [hostPattern(url)] });
@@ -66,6 +94,8 @@ async function openTab(api, command) {
   }
   const create = { url: url.href, active: focus };
   if (!focus) {
+    const pending = await pendingTab(api, url, access);
+    if (pending) return { tabId: pending.id, requestedUrl: url.href, siteShared, reused: true };
     // An explicit existing window also prevents Chrome from creating its first window in the foreground.
     const normal = { active: true, windowType: "normal" };
     let [host] = await api.tabs.query({ ...normal, lastFocusedWindow: true });
@@ -74,8 +104,11 @@ async function openTab(api, command) {
     create.windowId = host.windowId;
   }
   const tab = await api.tabs.create(create);
-  if (!focus && access === "current-tab" && !tab.incognito) {
-    await api.storage.session.set({ [taskKey(tab.id)]: url.origin });
+  if (!focus && !tab.incognito) {
+    const records = {};
+    if (tab.pendingUrl || tab.url !== url.href || tab.status === "loading") records[pendingKey(tab.id)] = url.href;
+    if (access === "current-tab") records[taskKey(tab.id)] = url.origin;
+    if (Object.keys(records).length) await api.storage.session.set(records);
   }
   return { tabId: tab.id, requestedUrl: url.href, siteShared, reused: false };
 }
@@ -83,8 +116,11 @@ async function openTab(api, command) {
 async function runOnce(api, command) {
   const tab = await api.tabs.get(command.tabId);
   if (!tab) throw new Error("INVALID_TAB");
-  if (tab.status === "loading" || (tab.pendingUrl && tab.pendingUrl !== tab.url)) throw new Error("PAGE_LOADING");
   const url = webUrl(tab.url);
+  const earlyRead = command.action === "read-start" || command.action === "read" ||
+    (command.action === "wait" && command.condition !== "ready");
+  if ((tab.pendingUrl && (tab.status === "loading" || tab.pendingUrl !== tab.url)) ||
+      (tab.status === "loading" && (!earlyRead || !url))) throw new Error("PAGE_LOADING");
   if (tab.incognito || !isOrdinaryPage(url)) throw new Error("SITE_NOT_SHARED");
   const access = await siteAccess(api, url, await accessSettings(api, [siteKey(url)]));
   if (access === "none") throw new Error("SITE_NOT_SHARED");
@@ -97,7 +133,7 @@ async function runOnce(api, command) {
   if (currentOnly && (await currentTab(api))?.id !== tab.id) throw new Error("TAB_NOT_CURRENT");
   const target = command.documentId ? { tabId: tab.id, documentIds: [command.documentId] } : { tabId: tab.id, frameIds: [0] };
   const [frame] = await api.scripting.executeScript({
-    target, world: "ISOLATED", func: runOnPage, args: [command, url.href, currentOnly]
+    target, world: "ISOLATED", injectImmediately: earlyRead, func: runOnPage, args: [command, url.href, currentOnly]
   });
   if (!frame || frame.frameId !== 0 || !frame.result) throw new Error("NO_PAGE_RESULT");
   if (frame.result.error) throw new Error(frame.result.error);
@@ -107,18 +143,25 @@ async function runOnce(api, command) {
 async function waitForPage(api, command) {
   const timeout = command.timeoutMs ?? 8000;
   if (!Number.isInteger(timeout) || timeout < 0 || timeout > 10000) throw new Error("INVALID_TIMEOUT");
-  if (!["ready", "text", "gone"].includes(command.condition)) throw new Error("INVALID_CONDITION");
+  if (command.action === "wait" && !["ready", "text", "gone"].includes(command.condition)) throw new Error("INVALID_CONDITION");
   const deadline = Date.now() + timeout;
+  let lastResult;
   for (;;) {
     try {
       const result = await runOnce(api, command);
       if (result.matched) return result;
+      lastResult = result;
     } catch (error) {
       if (!["PAGE_LOADING", "PAGE_CHANGED"].includes(error.message) &&
           !/^(?:Frame with ID 0 was removed|The frame was removed)\.?$/i.test(error.message)) throw error;
+      lastResult = undefined;
     }
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error("WAIT_TIMEOUT");
+    if (remaining <= 0) {
+      const error = new Error(lastResult?.reason || "WAIT_TIMEOUT");
+      if (lastResult?.url) error.detail = lastResult.url;
+      throw error;
+    }
     await new Promise(resolve => setTimeout(resolve, Math.min(250, remaining)));
   }
 }
@@ -135,6 +178,10 @@ export async function dispatch(api, command) {
   if (!actions.has(action)) throw new Error("UNKNOWN_ACTION");
   if (!Number.isInteger(command.tabId) || command.tabId < 0) throw new Error("INVALID_TAB");
   if (!Number.isSafeInteger(command.offset ?? 0) || (command.offset ?? 0) < 0) throw new Error("INVALID_OFFSET");
+  if (command.action === "read-start" && command.value !== undefined &&
+      (typeof command.value !== "string" || !command.value.trim() || command.value.length > 16000)) throw new Error("INVALID_VALUE");
+  if (command.snapshotId !== undefined && (action !== "read" || !command.documentId ||
+      typeof command.snapshotId !== "string" || !command.snapshotId)) throw new Error("INVALID_SNAPSHOT");
   if (["fill", "check", "select", "select-text"].includes(action) || (action === "wait" && command.condition !== "ready")) {
     if (typeof command.value !== "string" || command.value.length > 16000 ||
         (["select-text", "wait"].includes(action) && !command.value.trim())) throw new Error("INVALID_VALUE");
@@ -142,5 +189,5 @@ export async function dispatch(api, command) {
   if (action === "select-text" && command.occurrence !== undefined &&
       (!Number.isSafeInteger(command.occurrence) || command.occurrence < 1)) throw new Error("INVALID_OCCURRENCE");
   if (action === "scroll" && !["up", "down"].includes(command.direction)) throw new Error("INVALID_DIRECTION");
-  return action === "wait" ? waitForPage(api, command) : runOnce(api, command);
+  return action === "wait" || action === "read-start" ? waitForPage(api, command) : runOnce(api, command);
 }

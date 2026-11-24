@@ -62,8 +62,24 @@ class BridgeTest(unittest.TestCase):
                     duplicate = subprocess.run([exe, ORIGIN], capture_output=True, timeout=5)
                     self.assertNotEqual(duplicate.returncode, 0)
                     self.assertIn(b"PROFILE_BUSY", duplicate.stdout)
+                    # Hold a normal wait across the initial connection timeout. Reads can
+                    # queue before sending. A click that cannot connect is never dispatched.
+                    with subprocess.Popen([exe, "wait", "37", "text", "ready", "8000"], stdout=subprocess.PIPE) as waiting:
+                        active = receive(host.stdout, "pending page wait")
+                        with subprocess.Popen([exe, "status"], stdout=subprocess.PIPE) as status:
+                            busy = subprocess.run([exe, "click", "37", "ref.1"], capture_output=True, timeout=7)
+                            self.assertEqual(json.loads(busy.stdout)["error"], "BRIDGE_BUSY")
+                            send(host.stdin, {"id": active["id"], "reply": {"ok": True, "data": {"matched": True}}})
+                            queued = receive(host.stdout, "queued status")
+                            self.assertEqual(queued["command"], {"action": "status"})
+                            send(host.stdin, {"id": queued["id"], "reply": {"ok": True, "data": {"connected": True}}})
+                            self.assertTrue(json.loads(status.communicate(timeout=5)[0])["data"]["connected"])
+                        self.assertTrue(json.loads(waiting.communicate(timeout=5)[0])["data"]["matched"])
                     for args, expected in [(["read", "37", "12", "doc-1"],
                                              {"action": "read", "tabId": 37, "offset": 12, "documentId": "doc-1"}),
+                                            (["read-start", "37", "目标正文"], {"action": "read-start", "tabId": 37, "value": "目标正文"}),
+                                            (["read", "37", "12000", "doc-1", "snapshot-1"],
+                                             {"action": "read", "tabId": 37, "offset": 12000, "documentId": "doc-1", "snapshotId": "snapshot-1"}),
                                             (["fill", "37", "abc.2", "中文 空格"], 
                                              {"action": "fill", "tabId": 37, "ref": "abc.2", "value": "中文 空格"}),
                                             (["click", "37", "abc.1"], {"action": "click", "tabId": 37, "ref": "abc.1"}),
@@ -138,7 +154,7 @@ class BridgeTest(unittest.TestCase):
                     host.wait(timeout=5)
             offline = subprocess.run([exe, "status"], capture_output=True, timeout=8)
             self.assertNotEqual(offline.returncode, 0)
-            self.assertIn(b"BRIDGE_OFFLINE", offline.stdout)
+            self.assertEqual(json.loads(offline.stdout)["error"], "BRIDGE_OFFLINE")
             invalid = subprocess.run([exe, "fill", "7"], capture_output=True, timeout=5)
             self.assertNotEqual(invalid.returncode, 0)
             self.assertIn(b"USAGE", invalid.stdout)

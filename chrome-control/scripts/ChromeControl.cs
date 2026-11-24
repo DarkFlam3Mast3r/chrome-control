@@ -25,6 +25,9 @@ internal static class ChromeControl
     private const string PipePrefix = "CodexChromeControl.";
 #endif
     private static readonly string PipeName = PipePrefix + User.Value;
+    private static readonly string HostMutex = @"Local\" + PipeName;
+    private static readonly HashSet<string> QueuedReads = new HashSet<string>
+        { "status", "tabs", "read", "read-start", "wait", "controls", "check" };
     private static readonly ConcurrentDictionary<string, TaskCompletionSource<string>> Pending =
         new ConcurrentDictionary<string, TaskCompletionSource<string>>();
 
@@ -138,7 +141,7 @@ internal static class ChromeControl
         Stream output = Console.OpenStandardOutput();
         Stream input = Console.OpenStandardInput();
         bool created;
-        using (var mutex = new Mutex(true, @"Local\" + PipeName, out created))
+        using (var mutex = new Mutex(true, HostMutex, out created))
         {
             if (!created)
             {
@@ -164,7 +167,7 @@ internal static class ChromeControl
         }
     }
 
-    private const string Usage = "status | tabs | open URL [--focus] | read TAB [OFFSET [DOCUMENT]] | " +
+    private const string Usage = "status | tabs | open URL [--focus] | read-start TAB [TEXT] | read TAB [OFFSET [DOCUMENT [SNAPSHOT]]] | " +
         "controls TAB [OFFSET] | click TAB REF | fill TAB REF TEXT | check TAB REF TEXT | select TAB REF OPTION | scroll TAB up|down | " +
         "select-text TAB TEXT [OCCURRENCE] | wait TAB ready [MS] | wait TAB text|gone TEXT [MS] | " +
         "screenshot TAB OUTPUT.png | diff BEFORE.png AFTER.png [OUTPUT.png]";
@@ -192,10 +195,15 @@ internal static class ChromeControl
                 if (args.Length == 2) command["action"] = "open-background";
                 else command["focus"] = true;
                 return command;
+            case "read-start":
+                if (args.Length < 2 || args.Length > 3) throw new ArgumentException(Usage);
+                if (args.Length == 3) command["value"] = args[2];
+                break;
             case "read": case "controls":
-                if (args.Length < 2 || args.Length > (action == "read" ? 4 : 3)) throw new ArgumentException(Usage);
+                if (args.Length < 2 || args.Length > (action == "read" ? 5 : 3)) throw new ArgumentException(Usage);
                 if (args.Length >= 3) command["offset"] = Number(args[2]);
-                if (args.Length == 4) command["documentId"] = args[3];
+                if (args.Length >= 4) command["documentId"] = args[3];
+                if (args.Length == 5) command["snapshotId"] = args[4];
                 break;
             case "click": case "fill": case "check": case "select":
                 if (args.Length != (action == "click" ? 3 : 4)) throw new ArgumentException(Usage);
@@ -231,6 +239,37 @@ internal static class ChromeControl
         return command;
     }
 
+    private static string PipeTimeoutCode()
+    {
+        try
+        {
+            Mutex marker;
+            if (!Mutex.TryOpenExisting(HostMutex, MutexRights.Synchronize, out marker)) return "BRIDGE_OFFLINE";
+            marker.Dispose();
+            return "BRIDGE_BUSY";
+        }
+        catch (UnauthorizedAccessException) { return "BRIDGE_ACCESS_DENIED"; }
+    }
+
+    private static bool IsPipeWaitTimeout(Exception error)
+    {
+        if (error is TimeoutException) return true;
+        // .NET Framework can surface WaitNamedPipe's ERROR_SEM_TIMEOUT or ERROR_PIPE_BUSY as IOException.
+        return error is IOException && (error.HResult == unchecked((int)0x80070079) ||
+                                        error.HResult == unchecked((int)0x800700E7));
+    }
+
+    private static void Connect(NamedPipeClientStream pipe, string action)
+    {
+        try { pipe.Connect(3500); return; }
+        catch (Exception error)
+        {
+            if (!IsPipeWaitTimeout(error) || !QueuedReads.Contains(action) || PipeTimeoutCode() != "BRIDGE_BUSY") throw;
+        }
+        // Wait for the current command to finish. No command has been sent yet.
+        pipe.Connect(8500);
+    }
+
     private static int Client(string[] args)
     {
         Dictionary<string, object> command;
@@ -259,7 +298,7 @@ internal static class ChromeControl
             bool connected = false;
             try
             {
-                pipe.Connect(3500);
+                Connect(pipe, args[0]);
                 connected = true;
                 WriteFrame(pipe, Json(command));
                 string reply = ReadFrame(pipe, 21000, ReplyLimit);
@@ -277,16 +316,18 @@ internal static class ChromeControl
                     catch (Exception error) { return ImageError(error); }
                 }
                 if (!ok && Object.Equals(response["error"], "UNKNOWN_ACTION") &&
-                    (args[0] == "open" || args[0] == "wait" || args[0] == "select-text" || args[0] == "screenshot"))
+                    (args[0] == "open" || args[0] == "read-start" || args[0] == "wait" || args[0] == "select-text" || args[0] == "screenshot"))
                     reply = Json(new { ok = false, error = "EXTENSION_RELOAD_REQUIRED" });
                 Console.WriteLine(reply);
                 return ok ? 0 : 1;
             }
             catch (Exception error)
             {
+                Exception cause = error.GetBaseException();
                 string code = connected ? "OUTCOME_UNKNOWN" :
-                    error is UnauthorizedAccessException ? "BRIDGE_ACCESS_DENIED" : "BRIDGE_OFFLINE_OR_BUSY";
-                Console.WriteLine(Json(new { ok = false, error = code, detail = error.GetBaseException().Message }));
+                    cause is UnauthorizedAccessException ? "BRIDGE_ACCESS_DENIED" :
+                    IsPipeWaitTimeout(cause) ? PipeTimeoutCode() : "BRIDGE_CONNECTION_ERROR";
+                Console.WriteLine(Json(new { ok = false, error = code, detail = cause.Message }));
                 return 1;
             }
         }

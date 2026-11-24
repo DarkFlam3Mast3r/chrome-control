@@ -11,9 +11,9 @@ description: Use when a Windows user wants Codex to read links quietly in their 
 
 ## 读取链接
 
-用户给出网址要读正文时，直接运行本技能的 `scripts/read-url.ps1`，把完整网址作为唯一参数。它复用可读取的匹配标签或在后台打开链接，等待页面就绪，在同一文档中读完各段。成功时从 `data.text` 取正文，用 `data.url`、`data.title` 核对实际页面。继续操作用 `data.tabId`。
+用户给出网址要读正文时，运行本技能的 `scripts/read-url.ps1 '完整网址'`。它复用匹配的任务标签，等正文可读后，从同一份快照读完各段。已知目标原文时可加 `-WaitText '原文片段'`，例如需要等阅读器切换到指定章节时。成功后从 `data.text` 取正文，用 `data.url`、`data.title` 核对实际页面。继续操作用 `data.tabId`。
 
-如果沙箱报 `REGISTRY_ACCESS_DENIED`、`Requested registry access is not allowed` 或 `BRIDGE_ACCESS_DENIED`，在转用窗口或公开抓取前，先通过 Codex 的命令审批重试这次阅读。同一账号以前已连通，只有沙箱里报 `HOST_NOT_INSTALLED`、`BRIDGE_OFFLINE_OR_BUSY` 或拒绝加载已安装脚本时，也按此复核。
+如果沙箱明确报 `REGISTRY_ACCESS_DENIED`、`Requested registry access is not allowed`、`BRIDGE_ACCESS_DENIED` 或脚本访问被拒，可通过 Codex 的命令审批重试这次阅读。`BRIDGE_BUSY` 表示别的命令正在执行，等它结束后再试只读操作。`BRIDGE_OFFLINE` 时检查 Chrome 扩展的连接状态。
 
 在 `exec_command` 中为 `powershell.exe -NoProfile -File '阅读脚本的实际绝对路径' '用户给的网址'` 设置 `sandbox_permissions: "require_escalated"`。审批理由写明目标网址和后台打开、等待、读取正文的用途。一次请求覆盖这些步骤和长文续读。若已返回 `tabId`，按错误发生的阶段在原标签继续。[连接诊断](references/setup.md#连接诊断)
 
@@ -30,7 +30,8 @@ description: Use when a Windows user wants Codex to read links quietly in their 
 | 调用（接在 `& $cc` 后） | 使用方法 |
 | --- | --- |
 | `read TAB` | 读取当前文档可见正文、标题和实际网址。文章优先选公众号正文、article、main。 |
-| `read TAB OFFSET DOCUMENT` | 长文按上次的 `nextOffset` 和 `documentId` 续读至 `nextOffset` 为 null。每段核对网址、标题和总长度，页面发生变化时从头读起。 |
+| `read-start TAB [原文片段]` | 在原标签等待可读正文，同时取得第一段。可等特定文字出现在正文中。 |
+| `read TAB OFFSET DOCUMENT SNAPSHOT` | 用第一段的 `documentId`、`snapshotId` 和每段的 `nextOffset` 续读，直到 `nextOffset` 为 null。快照到期时从第一段重新读取。 |
 | `controls TAB [OFFSET]` | 获取可见控件的标签、类型和 `ref`。可按 `nextOffset` 翻页，每次列举生成一组新引用。 |
 | `click TAB REF` | 点击刚识别的目标，如「展开全文」。随后用 `read`、`controls` 或 `tabs` 核对效果。 |
 | `fill TAB REF '文字'` | 填写普通输入框。返回 `matched` 指示页面当时是否保留该值。 |

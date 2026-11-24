@@ -48,6 +48,61 @@ test("reads visible article text and retrieves the next chunk", () => {
   assert.equal(end.nextOffset, null);
 });
 
+test("overlapping reads retain distinct article revisions and release completed snapshots", async () => {
+  const { window, run } = page();
+  await new Promise(resolve => window.addEventListener("load", resolve, { once: true }));
+  const article = window.document.querySelector("article");
+  article.textContent = "A".repeat(12000) + "OLD";
+  const old = run({ action: "read-start" });
+  article.textContent = "B".repeat(12000) + "NEW";
+  const fresh = run({ action: "read-start" });
+  assert.notEqual(old.snapshotId, fresh.snapshotId);
+  const tail = first => run({ action: "read", offset: first.nextOffset, snapshotId: first.snapshotId });
+  assert.equal(run({ action: "read", offset: old.nextOffset }).error, "SNAPSHOT_REQUIRED");
+  assert.equal(old.text + tail(old).text, "A".repeat(12000) + "OLD");
+  assert.equal(tail(old).error, "SNAPSHOT_EXPIRED");
+  assert.equal(fresh.text + tail(fresh).text, "B".repeat(12000) + "NEW");
+  const abandoned = run({ action: "read-start" });
+  const later = window.Date.now() + 121000;
+  window.Date.now = () => later;
+  assert.equal(tail(abandoned).error, "SNAPSHOT_EXPIRED");
+  window.close();
+});
+
+test("article readiness ignores surrounding navigation and accepts short real articles", async () => {
+  const { window, run } = page();
+  await new Promise(resolve => window.addEventListener("load", resolve, { once: true }));
+  const article = window.document.querySelector("article");
+  const start = value => run({ action: "read-start", value });
+  for (const text of ["正在加载正文…", "Loading article...", "请稍候"]) {
+    article.textContent = text;
+    assert.equal(start().reason, "CONTENT_NOT_READY");
+  }
+  article.innerHTML = "<h1>本日新闻</h1><p>正在加载…</p>";
+  assert.equal(start().reason, "CONTENT_NOT_READY");
+  article.textContent = "";
+  assert.equal(start().reason, "NO_PAGE_TEXT");
+  article.textContent = "好";
+  article.setAttribute("aria-busy", "true");
+  assert.equal(start().reason, "CONTENT_NOT_READY");
+  article.removeAttribute("aria-busy");
+  assert.equal(start("预览").reason, "EXPECTED_TEXT_MISSING");
+  assert.equal(start("好").text, "好");
+  window.close();
+});
+
+test("a chunk boundary preserves emoji for the native UTF-8 transport", () => {
+  const { window, run } = page();
+  const text = "字".repeat(11999) + "🌱结尾";
+  window.document.querySelector("article").textContent = text;
+  const first = run({ action: "read" });
+  const last = run({ action: "read", offset: first.nextOffset, snapshotId: first.snapshotId });
+  assert.equal(first.nextOffset, 11999);
+  assert.equal(last.text, "🌱结尾");
+  assert.equal(first.text + last.text, text);
+  window.close();
+});
+
 test("fills, clicks, selects and refuses old or replaced controls", () => {
   const { run, window, input, inputEvents } = page();
   const controls = run({ action: "controls" }).controls;
@@ -90,7 +145,8 @@ function mockChrome() {
   const api = {
     storage: { local: { get: async () => ({ ...shared }) },
       session: { get: async key => key == null ? { ...session } : { [key]: session[key] },
-        set: async values => Object.assign(session, values), remove: async key => { delete session[key]; } } },
+        set: async values => Object.assign(session, values),
+        remove: async keys => { for (const key of [keys].flat()) delete session[key]; } } },
     permissions: { contains: async ({ origins }) => origins.every(o =>
       grant.has(o) || grant.has(o.split("://")[0] + "://*/*")) },
     tabs: { get: async id => tabs.find(t => t.id === id),
@@ -202,6 +258,36 @@ test("only explicit foreground open activates the existing tab and window", asyn
   assert.deepEqual(calls, [{ update: 8, active: true }, { focus: 1 }]);
 });
 
+test("concurrent quiet opens reuse only the task's own pending exact URL", async () => {
+  const { api, tabs, shared, grant } = mockChrome();
+  shared.allSites = true;
+  grant.add("http://*/*"); grant.add("https://*/*");
+  const request = { action: "open-background", url: "https://private.example.test/article?q=1" };
+  const create = api.tabs.create;
+  api.tabs.create = async options => {
+    const tab = await create(options);
+    return Object.assign(tab, { status: "loading", pendingUrl: options.url, url: "about:blank" });
+  };
+  tabs[1].status = "loading";
+  tabs[1].pendingUrl = request.url;
+  const [first, second] = await Promise.all([dispatch(api, request), dispatch(api, request)]);
+  assert.notEqual(first.tabId, tabs[1].id);
+  assert.equal(first.tabId, second.tabId);
+  assert.equal(second.reused, true);
+  assert.equal((await dispatch(api, request)).tabId, first.tabId);
+  const other = await dispatch(api, { ...request, url: request.url + "2" });
+  assert.notEqual(other.tabId, first.tabId);
+  assert.equal(tabs.find(tab => tab.active).id, 7);
+  (await api.tabs.get(first.tabId)).pendingUrl = "https://private.example.test/elsewhere";
+  assert.notEqual((await dispatch(api, request)).tabId, first.tabId);
+  shared["site:https://private.example.test"] = false;
+  const unshared = { ...request, url: request.url + "3" };
+  const unopened = await dispatch(api, unshared);
+  const retry = await dispatch(api, unshared);
+  assert.equal(retry.tabId, unopened.tabId);
+  assert.equal(retry.siteShared, false);
+});
+
 test("quiet open does not start a new foreground window when Chrome has no normal window", async () => {
   const { api, tabs, calls } = mockChrome();
   tabs.length = 0;
@@ -311,7 +397,7 @@ test("the all-sites checkbox requests once, persists across popup opens and can 
   api.permissions.remove = async options => { options.origins.forEach(o => grant.delete(o)); return true; };
   api.storage.local.set = async record => Object.assign(shared, record);
   api.storage.local.remove = async key => { delete shared[key]; };
-  api.runtime = { getManifest: () => ({ version: "1.2.1" }), sendMessage: async () => ({ ready: true }) };
+  api.runtime = { getManifest: () => ({ version: "1.3.0" }), sendMessage: async () => ({ ready: true }) };
   const html = await readFile(new URL("../chrome-control/extension/popup.html", import.meta.url), "utf8");
   async function openPopup(instance) {
     globalThis.document = new JSDOM(html).window.document;
