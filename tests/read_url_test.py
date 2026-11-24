@@ -34,6 +34,35 @@ def chunk(text, offset, total, next_offset, **changed):
 
 
 class ReadUrlTest(unittest.TestCase):
+    def test_install_guide_finds_the_bundled_extension_in_a_custom_location(self):
+        with tempfile.TemporaryDirectory() as temp:
+            skill = Path(temp) / "自选位置 有空格" / "chrome-control"
+            shutil.copytree(SCRIPTS.parent, skill)
+            for shell in ("powershell.exe", "pwsh.exe"):
+                with self.subTest(shell=shell):
+                    reply = subprocess.run([shell, "-NoProfile", "-File", skill / "scripts/chrome.ps1", "guide"],
+                                           capture_output=True, check=True, timeout=8)
+                    guide = json.loads(reply.stdout)["data"]
+                    self.assertTrue(guide["bundled"])
+                    self.assertEqual(Path(guide["extensionDir"]), skill / "extension")
+                    self.assertTrue((Path(guide["extensionDir"]) / "manifest.json").is_file())
+                    self.assertEqual(guide["extensionsPage"], "chrome://extensions")
+                    self.assertEqual(Path(guide["setupScript"]), skill / "scripts/setup.ps1")
+                    self.assertEqual(Path(guide["statusScript"]), skill / "scripts/chrome.ps1")
+                    self.assertTrue(any(guide["extensionDir"] in step and "加载已解压" in step for step in guide["steps"]))
+
+    def test_install_guide_detects_a_skill_copied_without_its_extension(self):
+        with tempfile.TemporaryDirectory() as temp:
+            scripts = Path(temp) / "scripts"
+            scripts.mkdir()
+            entry = scripts / "chrome.ps1"
+            shutil.copyfile(SCRIPTS / "chrome.ps1", entry)
+            reply = subprocess.run(["powershell.exe", "-NoProfile", "-File", entry, "guide"],
+                                   capture_output=True, check=True, timeout=8)
+            guide = json.loads(reply.stdout)["data"]
+            self.assertFalse(guide["bundled"])
+            self.assertIn("整个 chrome-control", guide["steps"][0])
+
     def run_reader(self, replies, arguments=(URL,), shell="powershell.exe"):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp)
@@ -85,6 +114,17 @@ class ReadUrlTest(unittest.TestCase):
         self.assertEqual(result["data"]["text"], value)
         self.assertEqual(calls, [["open", URL], ["read-start", "41", value]])
         self.assertNotIn("snapshotId", result["data"])
+
+    def test_first_read_returns_install_steps_at_the_point_of_failure(self):
+        guide = {"extensionDir": "D:/tools/chrome-control/extension", "steps": ["加载已解压的扩展程序"]}
+        for error in ("HOST_NOT_INSTALLED", "BRIDGE_OFFLINE", "EXTENSION_RELOAD_REQUIRED"):
+            with self.subTest(error=error):
+                replies = [OPEN] if error == "EXTENSION_RELOAD_REQUIRED" else []
+                replies.append({"ok": False, "error": error, "guide": guide})
+                result, calls = self.run_reader(replies)
+                self.assertEqual(result["guide"], guide)
+                self.assertEqual(result["stage"], "wait" if error == "EXTENSION_RELOAD_REQUIRED" else "open")
+                self.assertEqual(len(calls), len(replies))
 
     def test_preserves_timestamp_text_literally(self):
         value = "2026-11-22T12:00:00Z"

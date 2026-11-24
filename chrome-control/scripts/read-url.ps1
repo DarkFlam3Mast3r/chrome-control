@@ -22,6 +22,7 @@ function Invoke-ChromeStep {
     if (-not $reply.ok) {
         $failure = [InvalidOperationException]::new($reply.error)
         if ($reply.detail) { $failure.Data['detail'] = $reply.detail }
+        if ($reply.guide) { $failure.Data['guide'] = $reply.guide }
         throw $failure
     }
     return $reply.data
@@ -71,7 +72,8 @@ try {
     $failure = [ordered]@{ ok = $false; error = $_.Exception.Message; stage = $stage }
     if ($null -ne $chromeTabId) { $failure.tabId = $chromeTabId }
     if ($_.Exception.Data['detail']) { $failure.detail = $_.Exception.Data['detail'] }
-    ConvertTo-Json -Compress -InputObject $failure
+    if ($_.Exception.Data['guide']) { $failure.guide = $_.Exception.Data['guide'] }
+    ConvertTo-Json -Compress -Depth 5 -InputObject $failure
     exit 1
 }
 exit 0

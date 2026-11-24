@@ -1,5 +1,7 @@
 # Windows 首次设置
 
+需要适合这台电脑的安装步骤时，告诉 Codex「用 $chrome-control 带我安装 Chrome 扩展」，或从技能目录运行 `scripts/chrome.ps1 guide`。回执会给出已打包的扩展文件夹绝对路径、实际安装脚本和 Chrome 按钮名称。
+
 1. 运行本技能的 `scripts/setup.ps1`。它使用 Windows 自带的 .NET Framework 编译本机程序，写入当前用户的 `%LOCALAPPDATA%\CodexChromeControl\`，并注册 `HKCU\Software\Google\Chrome\NativeMessagingHosts\local.codex.chrome_control`。无须管理员权限。如果已经安装，直接进行下一步。
 2. 在要使用的 Chrome 配置中打开 `chrome://extensions`，开启「开发者模式」，点「加载已解压的扩展程序」，选择本技能的 **extension** 文件夹（里面有 manifest.json）。这个目录需要保留在原位。扩展名为「Chrome 网页控制」。
 3. 从 Chrome 工具栏打开「Chrome 网页控制」。勾选 **默认允许所有网站**，并按 Chrome 的提示确认。之后切换到任意普通 HTTP 或 HTTPS 网页即可读取和操作，包括该配置中已登录的网站。个别网站可点「排除此网站」或「恢复此网站」。关闭总开关会恢复按网站授权。若只需授权一个网站，在该网页点「允许此网站」即可，范围是相同协议、主机和端口。

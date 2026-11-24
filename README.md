@@ -4,6 +4,8 @@
 
 ## 首次安装
 
+如果已经把技能装进 Codex，直接说「用 $chrome-control 带我安装 Chrome 扩展」。它会给出本机扩展的完整路径，带你在 Chrome 中加载，并检查连接。也可以在技能目录运行 `scripts\chrome.ps1 guide` 查看同一份引导。
+
 1. 从本仓库的 **Code → Download ZIP** 下载并解压，找到与 `tests` 同级的 `chrome-control` 文件夹。把整个文件夹复制到 `%USERPROFILE%\.codex\skills\`。如果设置了 `CODEX_HOME`，复制到该目录下的 `skills\`。
 2. 在 PowerShell 中运行下面的命令，注册当前 Windows 用户的本机程序。首次安装需要 Windows 自带的 .NET Framework 和桌面版 Google Chrome。
 

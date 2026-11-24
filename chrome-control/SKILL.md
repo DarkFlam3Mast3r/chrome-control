@@ -1,6 +1,6 @@
 ---
 name: chrome-control
-description: Use when a Windows user wants Codex to read links quietly in their signed-in Google Chrome, interact with a reader or form, wait for page text, or capture and compare webpage screenshots.
+description: Use when a Windows user wants to set up the bundled Chrome extension, read links quietly in signed-in Google Chrome, interact with a reader or form, wait for page text, or capture and compare webpage screenshots.
 ---
 
 # 使用现有 Chrome
@@ -8,6 +8,14 @@ description: Use when a Windows user wants Codex to read links quietly in their 
 使用随技能提供的 Chrome 扩展和本机命令。扩展在用户加载它的 Chrome 配置中工作，网站授权可跨任务复用。当前 Windows 用户需要完成一次安装。首次设置、撤销网站授权和连接错误见 [安装与连接](references/setup.md)。
 
 `status` 返回扩展版本及全站开关 `data.allSites`。用户给出链接时，默认在后台打开、等待、读取，保持当前标签和窗口。仅当用户要求「切过去」「给我看这个标签」时使用 `open URL --focus`。
+
+## 第一次使用或安装扩展
+
+技能已包含 Chrome 扩展及其[清单文件](extension/manifest.json)。用户想看安装方法时，运行本技能的 `scripts/chrome.ps1 guide`，Chrome 尚未连接也能用。用户要实际配置时，查一次 `scripts/chrome.ps1 status`。已连接即可继续；`HOST_NOT_INSTALLED` 或 `BRIDGE_OFFLINE` 的回执会带相应的 `guide`。普通阅读直接从 `read-url.ps1` 开始，它也会在需要安装引导时返回这些步骤。
+
+- 使用回执中的实际 `extensionDir` 给用户一行可复制的完整文件夹路径，并按 `steps` 说明 Chrome 中要点的按钮。若 `bundled` 为 false，先补齐整个技能文件夹。
+- 需要首次安装本机连接且用户已要求安装时，由 Codex 运行 `setupScript`。已有本机程序但处于离线状态，先引导打开正确的 Chrome 配置、检查扩展弹窗。已安装旧版并收到 `EXTENSION_RELOAD_REQUIRED` 时，只需引导刷新原扩展。
+- 用户在 Chrome 中加载扩展并选择网站权限后，运行 `statusScript status`。确认 `data.connected` 后继续原任务；站点尚未共享时，再说明该站的授权入口。连接忙或终端权限不足时按连接诊断处理。
 
 ## 读取链接
 
