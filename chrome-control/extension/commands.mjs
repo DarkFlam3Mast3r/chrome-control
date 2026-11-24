@@ -1,6 +1,7 @@
-import { accessSettings, hostPattern, isOrdinaryPage, sharedSites, siteAccess, siteKey, webUrl } from "./sites.mjs";
+import { accessSettings, fileAccess, filePattern, fileUrl, hostPattern, isOrdinaryPage, requireFileAccess, sharedSites, siteAccess, siteKey, webUrl } from "./sites.mjs";
 import { runOnPage } from "./page.mjs";
 import { captureViewport } from "./screenshot.mjs";
+import { focusTab, locateTabs } from "./targets.mjs";
 
 const taskPageActions = new Set(["read", "read-start", "controls", "wait", "select-text"]);
 const actions = new Set([...taskPageActions, "click", "fill", "check", "select", "scroll", "screenshot"]);
@@ -40,13 +41,40 @@ async function listTabs(api) {
     if (tab && !tab.incognito && !tabs.some(t => t.id === tab.id) &&
         await siteAccess(api, webUrl(tab.url), settings) !== "none") tabs.push(tab);
   }
+  if (await fileAccess(api)) {
+    const files = await api.tabs.query({ url: [filePattern], windowType: "normal" });
+    tabs.push(...files.filter(tab => !tab.incognito && fileUrl(tab.url)));
+  }
   return { tabs: tabs.map(({ id, title, url, active }) => ({ id, title, url, active })) };
 }
 
 async function openTab(api, command) {
+  const file = fileUrl(command.url);
+  if (file) {
+    await requireFileAccess(api);
+    const matches = (await api.tabs.query({ url: [filePattern], windowType: "normal" }))
+      .filter(tab => !tab.incognito && !tab.pendingUrl && fileUrl(tab.url)?.href === file.href);
+    const selected = await currentTab(api);
+    const tab = matches.find(item => item.id === selected?.id) ?? matches[0];
+    if (!tab) throw new Error("LOCAL_TAB_NOT_OPEN");
+    if (command.action === "open" && command.focus && selected?.id !== tab.id) {
+      await api.tabs.update(tab.id, { active: true });
+      await api.windows.update(tab.windowId, { focused: true });
+    }
+    return { tabId: tab.id, requestedUrl: file.href, siteShared: true, reused: true };
+  }
   const url = webUrl(command.url);
-  if (!url) throw new Error("WEB_URL_REQUIRED");
   const focus = command.action === "open" && command.focus === true;
+  if (!url && !/^(?:chrome(?:-extension|-untrusted)?|about|blob|devtools|view-source):/i.test(command.url)) {
+    throw new Error("WEB_URL_REQUIRED");
+  }
+  if (!isOrdinaryPage(url)) {
+    const { tabs } = await locateTabs(api, command.url);
+    const target = tabs.find(tab => tab.selected) ?? (tabs.length === 1 ? tabs[0] : undefined);
+    if (!target) throw new Error(tabs.length ? "AMBIGUOUS_TAB" : "TAB_NOT_FOUND");
+    if (focus && !target.selected) await focusTab(api, target.id, target.url || target.title);
+    return { tabId: target.id, requestedUrl: command.url, route: "browser-ui", siteShared: false, reused: true };
+  }
   if (focus) return findOrCreateTab(api, url, true);
   // Serialize just the lookup and creation for this URL, never the navigation.
   const previous = opening.get(url.href) ?? Promise.resolve();
@@ -116,13 +144,15 @@ async function findOrCreateTab(api, url, focus) {
 async function runOnce(api, command) {
   const tab = await api.tabs.get(command.tabId);
   if (!tab) throw new Error("INVALID_TAB");
-  const url = webUrl(tab.url);
+  const file = fileUrl(tab.url);
+  const url = file || webUrl(tab.url);
   const earlyRead = command.action === "read-start" || command.action === "read" ||
     (command.action === "wait" && command.condition !== "ready");
   if ((tab.pendingUrl && (tab.status === "loading" || tab.pendingUrl !== tab.url)) ||
       (tab.status === "loading" && (!earlyRead || !url))) throw new Error("PAGE_LOADING");
-  if (tab.incognito || !isOrdinaryPage(url)) throw new Error("SITE_NOT_SHARED");
-  const access = await siteAccess(api, url, await accessSettings(api, [siteKey(url)]));
+  if (tab.incognito || (!file && !isOrdinaryPage(url))) throw new Error("SITE_NOT_SHARED");
+  if (file) await requireFileAccess(api);
+  const access = file ? "file" : await siteAccess(api, url, await accessSettings(api, [siteKey(url)]));
   if (access === "none") throw new Error("SITE_NOT_SHARED");
   if (command.action === "screenshot") return captureViewport(api, tab);
   let currentOnly = access === "current-tab";
@@ -173,6 +203,8 @@ export async function dispatch(api, command) {
     return { browser: "Chrome", version: api.runtime.getManifest().version, connected: true, allSites };
   }
   if (action === "tabs") return listTabs(api);
+  if (action === "locate") return locateTabs(api, command.value);
+  if (action === "focus-tab") return focusTab(api, command.tabId, command.value);
   // Older workers reject open-background; a new CLI cannot silently activate a tab through an old worker.
   if (action === "open" || action === "open-background") return openTab(api, command);
   if (!actions.has(action)) throw new Error("UNKNOWN_ACTION");

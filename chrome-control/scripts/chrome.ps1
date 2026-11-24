@@ -19,9 +19,9 @@ function Get-SetupGuide([string] $reason) {
         }
         $steps += '在要使用的 Chrome 配置中打开 chrome://extensions，开启右上角的「开发者模式」。'
         $steps += "点「加载已解压的扩展程序」，在文件夹选择框中粘贴这个完整路径并确认：$extension"
-        $steps += '打开要使用的普通网页，从工具栏打开「Chrome 网页控制」。点「允许此网站」，或按需要勾选「默认允许所有网站」并确认。'
+        $steps += '首次加载后即可定位标签、读取普通网页。要排除个别网站，在该网站打开扩展弹窗。'
     }
-    if ($bundled) { $steps += '回到 Codex 说「装好了」。Codex 会检查连接，然后继续刚才的任务。' }
+    if ($bundled) { $steps += '回到本地助手说「装好了」，让它检查连接并继续刚才的任务。手工验证可运行状态脚本并传入 status。' }
     return [ordered]@{ extensionDir = $extension; bundled = $bundled; extensionsPage = 'chrome://extensions'
         setupScript = $setup; statusScript = (Join-Path $PSScriptRoot 'chrome.ps1'); steps = $steps }
 }

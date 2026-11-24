@@ -2,6 +2,8 @@
 export function runOnPage(command, expectedUrl, currentOnly = false) {
   if (window !== window.top || location.href !== expectedUrl) return { error: "PAGE_CHANGED" };
   if (currentOnly && document.visibilityState !== "visible") return { error: "TAB_NOT_CURRENT" };
+  if (document.contentType === "application/pdf" ||
+      document.querySelector("body > embed[type='application/pdf']:only-child")) return { error: "PDF_VIEWER_REQUIRED" };
 
   function visible(el) {
     if (!el?.isConnected || !el.getClientRects().length ||

@@ -62,7 +62,11 @@ function connect() {
   return attempt;
 }
 
-chrome.runtime.onInstalled.addListener(connect);
+chrome.runtime.onInstalled.addListener(async ({ reason }) => {
+  // Earlier versions used a missing allSites value for per-site access.
+  if (reason === "install") await chrome.storage.local.set({ allSites: true });
+  return connect();
+});
 chrome.runtime.onStartup.addListener(connect);
 const forgetTask = id => chrome.storage.session.remove([taskKey(id), pendingKey(id)]);
 chrome.tabs.onRemoved.addListener(forgetTask);

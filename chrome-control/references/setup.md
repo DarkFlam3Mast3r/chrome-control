@@ -4,12 +4,14 @@
 
 1. 运行本技能的 `scripts/setup.ps1`。它使用 Windows 自带的 .NET Framework 编译本机程序，写入当前用户的 `%LOCALAPPDATA%\CodexChromeControl\`，并注册 `HKCU\Software\Google\Chrome\NativeMessagingHosts\local.codex.chrome_control`。无须管理员权限。如果已经安装，直接进行下一步。
 2. 在要使用的 Chrome 配置中打开 `chrome://extensions`，开启「开发者模式」，点「加载已解压的扩展程序」，选择本技能的 **extension** 文件夹（里面有 manifest.json）。这个目录需要保留在原位。扩展名为「Chrome 网页控制」。
-3. 从 Chrome 工具栏打开「Chrome 网页控制」。勾选 **默认允许所有网站**，并按 Chrome 的提示确认。之后切换到任意普通 HTTP 或 HTTPS 网页即可读取和操作，包括该配置中已登录的网站。个别网站可点「排除此网站」或「恢复此网站」。关闭总开关会恢复按网站授权。若只需授权一个网站，在该网页点「允许此网站」即可，范围是相同协议、主机和端口。
+3. 如果 Chrome 显示安装权限，请按提示确认。全新安装默认允许普通 HTTP 和 HTTPS 网页，包括该配置中已登录的网站。在某个网站的弹窗关闭「当前网站」可将其排除。关闭「默认允许所有网站」后，仅单独允许的来源可用，范围是相同协议、主机和端口。
 4. 用 `scripts/chrome.ps1 status` 检查本机连接，用 `scripts/chrome.ps1 tabs` 核对已允许的标签。日常使用可以直接用自然语言调用 `$chrome-control`。
 
 本机命令和扩展通过 Chrome Native Messaging 以及仅限当前 Windows 用户的本地命名管道交换消息。一个 Windows 用户同时连接一个 Chrome 配置。Chrome 启动时扩展重新建立本机连接。调试端口 9222 的设置与本连接独立。扩展只操作授权网站的顶层文档，普通文字输入和 DOM 点击适用于支持这类事件的控件。
 
-从旧版升级时，将新版技能文件复制到原安装目录，用 `scripts/setup.ps1 -UpdateOnly` 更新已注册的本机程序。在 `chrome://extensions` 找到「Chrome 网页控制」，点一次刷新。`status` 返回 `version: "1.3.0"` 表示新版已连接。网站选择保存在原扩展配置中。
+标签定位随安装生效。普通网页包含 `http://localhost` 上的应用。已在 Chrome 打开的本地 HTML 也可操作，受此扩展的「允许访问文件网址」设置约束。Chrome 设置页、应用商店和其他扩展阅读器的处理方式见[特殊标签与远程调试](tab-types.md)。
+
+从旧版升级时，将新版技能文件复制到原安装目录，用 `scripts/setup.ps1 -UpdateOnly` 更新已注册的本机程序。在 `chrome://extensions` 找到「Chrome 网页控制」，点一次刷新。如果 Chrome 要求确认新增权限，确认后启用。`status` 返回 `version: "1.4.0"` 表示新版已连接。升级保留之前的全站或逐站模式，以及排除的网站。
 
 `open URL` 默认后台打开。已有同一网址且可读取时，直接复用；技能刚创建且仍在加载的标签也可复用。若同一网址只在一个未共享的后台标签中打开，技能会另开后台标签，保留原页状态。全站模式下，技能为链接新建的后台标签可在相同来源等待、读取和选句。用户选中过该标签、离开该来源、关闭标签或重启 Chrome 后，该后台访问资格结束。单独授权的网站沿用原授权。
 
@@ -28,6 +30,10 @@
 | `TAB_NOT_CURRENT` | 当前命令需要选中目标标签。用户只要读链接时可用 `open URL` 获取可后台读取的目标；需要操作原标签时以用户指定的前台或网站授权为准。 |
 | `EXTENSION_RELOAD_REQUIRED` | 在扩展管理页刷新「Chrome 网页控制」，再看 `status` 中的版本。旧扩展收到新版静默打开命令时会停止。 |
 | `NO_BACKGROUND_WINDOW` | 当前没有可容纳后台标签的普通 Chrome 窗口。下次已有普通窗口时继续。 |
+| `FILE_ACCESS_REQUIRED` | 在当前文件标签的弹窗点「扩展详情」，开启 Chrome 的「允许访问文件网址」后重试。[Chrome 文件访问权限](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions#allow-access) |
+| `LOCAL_TAB_NOT_OPEN` | 在 Chrome 打开用户指定的本地文件，再重试同一网址。 |
+| `TAB_NOT_FOUND` / `AMBIGUOUS_TAB` / `TARGET_CHANGED` | 用完整标题或实际网址重新定位，核对所选窗口。 |
+| `PDF_VIEWER_REQUIRED` / `BROWSER_UI_REQUIRED` | 通过 PDF 工具、已授权的 DevTools 会话或可见界面继续，按[特殊标签说明](tab-types.md)识别可用操作。 |
 | `WAIT_TIMEOUT` | 指定时间内未满足条件。读取目标标签的实际内容，检查是否跳转、文字有无变化或内容尚在加载。 |
 | `NO_PAGE_TEXT` / `CONTENT_NOT_READY` / `EXPECTED_TEXT_MISSING` | 等待结束时，正文仍为空、仍在加载，或尚未出现指定文字。用回执的 `tabId` 和 `detail` 中的实际网址核对页面，可在原标签再运行 `read-start`。 |
 | `SNAPSHOT_EXPIRED` / `SNAPSHOT_REQUIRED` / `SNAPSHOT_LIMIT` | 读取长文时传回同一份 `snapshotId`。读完或两分钟未续读后快照释放；失效时从头读取。单个文档最多保留八份未完成的快照。 |
@@ -51,4 +57,4 @@ powershell.exe -NoProfile -File '本技能目录\scripts\read-url.ps1' 'https://
 
 如需停用，在 Chrome 的扩展管理页停用或移除「Chrome 网页控制」即可断开。彻底卸载时，可一并移除上述名称的当前用户注册项和本机程序目录。
 
-Chrome 的自动调试连接会在请求新的调试会话时询问用户。本扩展通过 Chrome 的可选网站权限保存选择。[DevTools 自动连接](https://developer.chrome.com/blog/chrome-devtools-mcp-debug-your-browser-session) · [可选权限](https://developer.chrome.com/docs/extensions/reference/api/permissions) · [Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)
+Chrome 的自动调试连接会在请求新的调试会话时询问用户。本扩展保存网站选择，并在执行操作时检查 Chrome 授予的访问范围。[DevTools 自动连接](https://developer.chrome.com/blog/chrome-devtools-mcp-debug-your-browser-session) · [Chrome 扩展权限](https://developer.chrome.com/docs/extensions/reference/api/permissions) · [Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)

@@ -75,7 +75,10 @@ class BridgeTest(unittest.TestCase):
                             send(host.stdin, {"id": queued["id"], "reply": {"ok": True, "data": {"connected": True}}})
                             self.assertTrue(json.loads(status.communicate(timeout=5)[0])["data"]["connected"])
                         self.assertTrue(json.loads(waiting.communicate(timeout=5)[0])["data"]["matched"])
-                    for args, expected in [(["read", "37", "12", "doc-1"],
+                    for args, expected in [(["locate", "示例阅读器"], {"action": "locate", "value": "示例阅读器"}),
+                                            (["focus-tab", "37", "chrome://settings/"],
+                                             {"action": "focus-tab", "tabId": 37, "value": "chrome://settings/"}),
+                                            (["read", "37", "12", "doc-1"],
                                              {"action": "read", "tabId": 37, "offset": 12, "documentId": "doc-1"}),
                                             (["read-start", "37", "目标正文"], {"action": "read-start", "tabId": 37, "value": "目标正文"}),
                                             (["read", "37", "12000", "doc-1", "snapshot-1"],

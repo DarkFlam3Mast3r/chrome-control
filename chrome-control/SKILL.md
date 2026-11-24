@@ -1,6 +1,6 @@
 ---
 name: chrome-control
-description: Use when a Windows user wants to set up the bundled Chrome extension, read links quietly in signed-in Google Chrome, interact with a reader or form, wait for page text, or capture and compare webpage screenshots.
+description: Use when a Windows user wants to control signed-in Chrome, quietly read webpages or open local HTML, locate a PDF, reader or browser settings tab, or set up the bundled extension.
 ---
 
 # 使用现有 Chrome
@@ -14,8 +14,8 @@ description: Use when a Windows user wants to set up the bundled Chrome extensio
 技能已包含 Chrome 扩展及其[清单文件](extension/manifest.json)。用户想看安装方法时，运行本技能的 `scripts/chrome.ps1 guide`，Chrome 尚未连接也能用。用户要实际配置时，查一次 `scripts/chrome.ps1 status`。已连接即可继续；`HOST_NOT_INSTALLED` 或 `BRIDGE_OFFLINE` 的回执会带相应的 `guide`。普通阅读直接从 `read-url.ps1` 开始，它也会在需要安装引导时返回这些步骤。
 
 - 使用回执中的实际 `extensionDir` 给用户一行可复制的完整文件夹路径，并按 `steps` 说明 Chrome 中要点的按钮。若 `bundled` 为 false，先补齐整个技能文件夹。
-- 需要首次安装本机连接且用户已要求安装时，由 Codex 运行 `setupScript`。已有本机程序但处于离线状态，先引导打开正确的 Chrome 配置、检查扩展弹窗。已安装旧版并收到 `EXTENSION_RELOAD_REQUIRED` 时，只需引导刷新原扩展。
-- 用户在 Chrome 中加载扩展并选择网站权限后，运行 `statusScript status`。确认 `data.connected` 后继续原任务；站点尚未共享时，再说明该站的授权入口。连接忙或终端权限不足时按连接诊断处理。
+- 需要首次安装本机连接且用户已要求安装时，运行 `setupScript`。已有本机程序但处于离线状态，先引导打开正确的 Chrome 配置、检查扩展弹窗。已安装旧版并收到 `EXTENSION_RELOAD_REQUIRED` 时，引导刷新原扩展并完成 Chrome 显示的权限确认。
+- 用户在 Chrome 中加载扩展后，运行 `statusScript status`。确认 `data.connected` 后继续原任务。全新安装默认允许普通网站，升级沿用已有的网站选择。站点尚未共享时，再说明该站的授权入口。
 
 ## 读取链接
 
@@ -23,15 +23,17 @@ description: Use when a Windows user wants to set up the bundled Chrome extensio
 
 如果沙箱明确报 `REGISTRY_ACCESS_DENIED`、`Requested registry access is not allowed`、`BRIDGE_ACCESS_DENIED` 或脚本访问被拒，可通过 Codex 的命令审批重试这次阅读。`BRIDGE_BUSY` 表示别的命令正在执行，等它结束后再试只读操作。`BRIDGE_OFFLINE` 时检查 Chrome 扩展的连接状态。
 
-在 `exec_command` 中为 `powershell.exe -NoProfile -File '阅读脚本的实际绝对路径' '用户给的网址'` 设置 `sandbox_permissions: "require_escalated"`。审批理由写明目标网址和后台打开、等待、读取正文的用途。一次请求覆盖这些步骤和长文续读。若已返回 `tabId`，按错误发生的阶段在原标签继续。[连接诊断](references/setup.md#连接诊断)
+在 Codex 的 `exec_command` 中，可为 `powershell.exe -NoProfile -File '阅读脚本的实际绝对路径' '用户给的网址'` 设置 `sandbox_permissions: "require_escalated"`。其他助手使用自身的本机命令工具和授权机制，例如 DeepSeek Harness 在 Windows 上的 `pwsh`。审批理由写明目标网址和用途，一次调用覆盖后台打开、等待和分页。若已返回 `tabId`，在原标签继续。[连接诊断](references/setup.md#连接诊断)
 
 ## 定位已有标签
 
-在 PowerShell 中将 `$cc` 设为本技能目录下 `scripts/chrome.ps1` 的完整路径。用户点名已有标签或需要其中未保存的状态时，用 `& $cc tabs` 按链接或标题查找，列表项的标识为 `data.tabs[].id`。只需打开时用 `& $cc open '完整网址'`。命令返回 JSON，可用 `ConvertFrom-Json` 解析，先检查 `ok`。
+在 PowerShell 中将 `$cc` 设为本技能的 `scripts/chrome.ps1` 路径。普通网页可从 `& $cc tabs` 取得已允许的标签 ID。用户点名阅读器、PDF、设置页或指定已有标签时，用 `& $cc locate '完整标题或网址'`，用户指当前标签时用 `& $cc locate`。从 `data.tabs` 核对目标、`selected` 和 `route`。多个匹配需要根据网址或窗口区分。定位保持前台位置。
+
+标签定位随扩展安装生效。已打开的本地 HTML 可用 `read-url.ps1 'file:///…'`，也可按标签 ID 读、点、填。仅在收到 `FILE_ACCESS_REQUIRED` 时，引导用户在此扩展详情里开启「允许访问文件网址」，再重试原标签。遇到 `PDF_VIEWER_REQUIRED`、`BROWSER_UI_REQUIRED` 或 `browser-ui`，按目标能力使用已连接的 DevTools 或前台界面。每个任务复用同一连接，并分别使用扩展和 DevTools 各自返回的页面 ID。具体流程见[特殊标签与远程调试](references/tab-types.md)。
 
 全站模式允许操作当前普通网页，也允许在技能为指定链接新建的后台标签上等待、读正文、选句和列控件。用户选中过该后台标签或它跳转到其他来源后，重新按当前网页及网站授权定位。单独授权的网站可在后台操作。遇到 `TAB_NOT_CURRENT` 时保留用户的前台位置。
 
-多步操作复用扩展连接。跨 shell 调用保留标签 ID、分页位置和控件引用的实际值，并重新指定脚本路径。
+跨 shell 调用保留标签 ID、分页位置和控件引用的实际值。明确需要切到已有标签时，`& $cc focus-tab TAB '刚核对的网址或标题'` 会再次核对目标。用户要求静默时保留当前窗口和标签。
 
 ## 阅读和操作
 

@@ -5,6 +5,7 @@ import test from "node:test";
 import { JSDOM } from "jsdom";
 import { dispatch } from "../chrome-control/extension/commands.mjs";
 import { runOnPage } from "../chrome-control/extension/page.mjs";
+import { accessSettings } from "../chrome-control/extension/sites.mjs";
 
 const fixture = `<title>示例文章</title><nav>导航</nav><article><h1>城市观察</h1>
   <p>第一段是正文。</p><p>最后一段是结尾。</p></article>
@@ -129,7 +130,7 @@ test("fills, clicks, selects and refuses old or replaced controls", () => {
 
 function mockChrome() {
   const p = page();
-  const grant = new Set([pattern]);
+  const grant = new Set([pattern, "tabs", "file:///*"]);
   const shared = { ["site:" + new URL(url).origin]: true };
   const tabs = [{ id: 7, title: "示例文章", url, active: true, windowId: 1 },
     { id: 8, url: "https://private.example.test/", title: "private tab", windowId: 1 },
@@ -147,8 +148,9 @@ function mockChrome() {
       session: { get: async key => key == null ? { ...session } : { [key]: session[key] },
         set: async values => Object.assign(session, values),
         remove: async keys => { for (const key of [keys].flat()) delete session[key]; } } },
-    permissions: { contains: async ({ origins }) => origins.every(o =>
-      grant.has(o) || grant.has(o.split("://")[0] + "://*/*")) },
+    permissions: { contains: async ({ origins = [], permissions = [] }) => permissions.every(p => grant.has(p)) &&
+      origins.every(o => grant.has(o) || grant.has(o.split("://")[0] + "://*/*")) },
+    extension: { isAllowedFileSchemeAccess: async () => false },
     tabs: { get: async id => tabs.find(t => t.id === id),
       onActivated: tabEvent(), onUpdated: tabEvent(), onRemoved: tabEvent(),
       query: async ({ active, lastFocusedWindow, currentWindow, url: patterns }) => tabs.filter(t => {
@@ -208,7 +210,8 @@ test("global access requires browser consent and works on newly selected ordinar
   for (const protectedUrl of ["chrome://settings/", "file:///C:/fixture.html", "https://chromewebstore.google.com/detail/test"]) {
     tabs[1].url = protectedUrl;
     assert.deepEqual(await visibleIds(), [7]);
-    await assert.rejects(dispatch(api, { action: "read", tabId: 8 }), /SITE_NOT_SHARED/);
+    await assert.rejects(dispatch(api, { action: "read", tabId: 8 }),
+      protectedUrl.startsWith("file:") ? /FILE_ACCESS_REQUIRED/ : /SITE_NOT_SHARED/);
   }
   tabs[1].url = "https://private.example.test/";
   grant.delete("https://*/*");
@@ -256,6 +259,70 @@ test("only explicit foreground open activates the existing tab and window", asyn
   assert.equal(r.tabId, 8);
   assert.equal(tabs.find(t => t.active).id, 8);
   assert.deepEqual(calls, [{ update: 8, active: true }, { focus: 1 }]);
+});
+
+test("locate resolves named tabs without focusing them or granting page access", async () => {
+  const { api, tabs, shared, calls } = mockChrome();
+  const settings = { id: 15, windowId: 2, title: "设置", url: "chrome://settings/" };
+  tabs.push(settings, { ...settings, id: 16, incognito: true },
+    { id: 17, windowId: 1, title: "PDF: Chapter 1", url: "chrome-extension://example/reader.html" },
+    { id: 18, windowId: 1, title: "https://impostor.example/", url: "https://elsewhere.example/" },
+    { id: 19, windowId: 1, title: "data:text/plain,example", url: "data:text/plain,example" });
+  const locate = value => dispatch(api, { action: "locate", value });
+  assert.equal((await locate("设置")).tabs[0].id, 15);
+  assert.deepEqual((await locate("https://impostor.example/")).tabs, []);
+  const inline = (await locate("data:text/plain,example")).tabs[0];
+  assert.equal(inline.url, undefined);
+  assert.equal(inline.title, undefined);
+  assert.deepEqual((await locate()).tabs.map(t => t.id), [7]);
+  assert.deepEqual((await locate("chrome://settings")).tabs.map(t => [t.id,t.route,t.selected]), [[15,"browser-ui",false]]);
+  const existing = await dispatch(api, { action: "open-background", url: "chrome://settings/" });
+  assert.equal(existing.tabId, 15);
+  assert.equal(existing.route, "browser-ui");
+  await assert.rejects(dispatch(api, { action: "open-background", url: "chrome://downloads/" }), /TAB_NOT_FOUND/);
+  assert.equal((await locate("PDF: Chapter 1")).tabs[0].route, "browser-ui");
+  assert.equal((await locate("other port")).tabs[0].route, "site-permission");
+  shared["site:https://news.example.test:8443"] = false;
+  assert.equal((await locate("other port")).tabs[0].route, "excluded");
+  assert.equal((await locate("absent")).tabs.length, 0);
+  assert.deepEqual(calls, []);
+  await assert.rejects(dispatch(api, { action: "read", tabId: 15 }), /SITE_NOT_SHARED/);
+  const focus = value => dispatch(api, { action: "focus-tab", tabId: 15, value });
+  await assert.rejects(focus("chrome://extensions/"), /TARGET_CHANGED/);
+  assert.equal((await focus(settings.url)).selected, true);
+  assert.equal((await locate()).tabs[0].id, 15);
+});
+
+test("file access follows Chrome's file setting and matches only an already open file", async () => {
+  const { api, tabs, grant, calls } = mockChrome();
+  const address = "file:///C:/fixture%20reader.html";
+  tabs.push({ id: 15, windowId: 1, url: address, title: "本地阅读器" });
+  const open = url => dispatch(api, { action: "open-background", url });
+  assert.equal((await dispatch(api, { action: "locate", value: address })).tabs[0].route, "file-permission");
+  await assert.rejects(open(address), /FILE_ACCESS_REQUIRED/);
+  api.extension.isAllowedFileSchemeAccess = async () => true;
+  assert.equal((await open(address)).tabId, 15);
+  assert.equal((await dispatch(api, { action: "locate", value: address })).tabs[0].route, "page");
+  assert.ok((await dispatch(api, { action: "tabs" })).tabs.some(t=>t.id===15));
+  await assert.rejects(open("file:///C:/other.html"), /LOCAL_TAB_NOT_OPEN/);
+  assert.deepEqual(calls, []);
+  api.scripting.executeScript = async ({ target, args }) => {
+    assert.equal(target.tabId, 15);
+    assert.equal(args[1], address);
+    return [{ frameId: 0, documentId: "file-doc", result: { text: "本地正文" } }];
+  };
+  assert.equal((await dispatch(api,{ action: "read",tabId:15 })).text, "本地正文");
+  grant.delete("file:///*");
+  await assert.rejects(dispatch(api, { action: "read", tabId: 15 }), /FILE_ACCESS_REQUIRED/);
+});
+
+test("a PDF viewer requests document or visible-viewer handling", () => {
+  const { window, run } = page();
+  window.document.body.innerHTML = '<embed type="application/pdf">';
+  assert.equal(run({ action: "read-start" }).error, "PDF_VIEWER_REQUIRED");
+  window.document.body.insertAdjacentHTML("beforeend", "<article>网页中的相关文档</article>");
+  assert.equal(run({ action: "read" }).text, "网页中的相关文档");
+  window.close();
 });
 
 test("concurrent quiet opens reuse only the task's own pending exact URL", async () => {
@@ -381,7 +448,7 @@ test("foreground-only operations stop if the target becomes hidden during inject
   assert.equal(window.document.querySelector("#q").value, "");
 });
 
-test("the all-sites checkbox requests once, persists across popup opens and can be revoked", async () => {
+test("the popup preserves website choices and shows file recovery only on a blocked file", async () => {
   const { api, shared, grant, tabs } = mockChrome();
   // This profile starts with an explicit grant for tab 7. Tab 8 is new.
   tabs[0].active = false;
@@ -394,10 +461,9 @@ test("the all-sites checkbox requests once, persists across popup opens and can 
     if (approve) for (const origin of options.origins) grant.add(origin);
     return approve;
   };
-  api.permissions.remove = async options => { options.origins.forEach(o => grant.delete(o)); return true; };
   api.storage.local.set = async record => Object.assign(shared, record);
   api.storage.local.remove = async key => { delete shared[key]; };
-  api.runtime = { getManifest: () => ({ version: "1.3.0" }), sendMessage: async () => ({ ready: true }) };
+  api.runtime = { id: "test-id", getManifest: () => ({ version: "1.4.0" }), sendMessage: async () => ({ ready: true }) };
   const html = await readFile(new URL("../chrome-control/extension/popup.html", import.meta.url), "utf8");
   async function openPopup(instance) {
     globalThis.document = new JSDOM(html).window.document;
@@ -423,16 +489,59 @@ test("the all-sites checkbox requests once, persists across popup opens and can 
     box = await openPopup(2);
     assert.equal(box.checked, true);
     const siteButton = document.querySelector("#toggle");
+    assert.equal(siteButton.getAttribute("aria-checked"), "true");
     await siteButton.onclick();
+    assert.equal(siteButton.getAttribute("aria-checked"), "false");
     await assert.rejects(dispatch(api, { action: "read", tabId: 8 }), /SITE_NOT_SHARED/);
     await siteButton.onclick();
     assert.ok((await dispatch(api, { action: "tabs" })).tabs.some(t => t.id === 8));
     box.checked = false;
     await box.onchange();
     assert.equal(await mode(), false);
-    assert.equal(grant.has("https://*/*"), false);
+    assert.equal(shared.allSites, false);
+    assert.equal(grant.has("https://*/*"), true);
     assert.deepEqual((await dispatch(api, { action: "tabs" })).tabs.map(t => t.id), [7]);
     assert.equal(requests.length, 2);
+    for (const [index, address] of ["chrome://extensions/", "file:///C:/fixture.html",
+      "https://chromewebstore.google.com/detail/test", undefined].entries()) {
+      tabs[1].url = address;
+      box = await openPopup("restricted-" + index);
+      assert.equal(document.querySelector("#site-access").hidden, true);
+      assert.equal(document.querySelector("#toggle").disabled, true);
+      assert.equal(document.querySelector("#scope").textContent, "");
+      assert.equal(document.querySelector("#connection").textContent, "已连接");
+      assert.equal(document.querySelector("#file-issue").hidden, !address?.startsWith("file:"));
+      assert.equal(box.disabled, false);
+    }
+    box.checked = true;
+    await box.onchange();
+    assert.equal(box.checked, true);
+    assert.equal(requests.length, 2);
+    assert.equal(document.querySelector("#site-access").hidden, true);
+    tabs[1].url = "http://localhost:3000/reader";
+    await openPopup("localhost");
+    assert.equal(document.querySelector("#site-access").hidden, false);
+    assert.equal(document.querySelector("#origin").textContent, "http://localhost:3000");
+    assert.equal(document.querySelector("#toggle").disabled, false);
+    assert.equal(document.querySelector("details, #tab-lookup, #file-access"), null);
+    assert.equal(document.querySelector("#file-issue").hidden, true);
+    tabs[1].url = "file:///C:/fixture.html";
+    await openPopup("file-blocked");
+    assert.equal(document.querySelector("#file-issue").hidden, false);
+    const settingsPage = await document.querySelector("#file-settings").onclick();
+    assert.equal(settingsPage.url, "chrome://extensions/?id=test-id");
+    api.extension.isAllowedFileSchemeAccess = async () => true;
+    await openPopup("file-enabled");
+    assert.equal(document.querySelector("#file-issue").hidden, true);
+    assert.equal(requests.length, 2);
+    api.runtime.sendMessage = async () => ({ready:false,detail:"未连接到测试主机"});
+    await openPopup("offline");
+    assert.equal(document.querySelector("#connection").dataset.state, "offline");
+    assert.equal(document.querySelector("#connection-issue").hidden, false);
+    api.runtime.sendMessage = async () => ({ready:true});
+    await document.querySelector("#retry").onclick();
+    assert.equal(document.querySelector("#connection").dataset.state, "ready");
+    assert.equal(document.querySelector("#connection-issue").hidden, true);
   } finally {
     delete globalThis.chrome;
     delete globalThis.document;
@@ -443,7 +552,7 @@ test("scope applies to tabs, direct ID, revocation, ports and navigation", async
   assert.deepEqual((await dispatch(api, { action: "tabs" })).tabs.map(t => t.id), [7]);
   await assert.rejects(dispatch(api, { action: "read", tabId: 8 }), /SITE_NOT_SHARED/);
   await assert.rejects(dispatch(api, { action: "read", tabId: 9 }), /SITE_NOT_SHARED/);
-  await assert.rejects(dispatch(api, { action: "open", url: "chrome://settings/" }), /WEB_URL_REQUIRED/);
+  await assert.rejects(dispatch(api, { action: "open", url: "chrome://settings/" }), /TAB_NOT_FOUND/);
   await assert.rejects(dispatch(api, { action: "eval", tabId: 7 }), /UNKNOWN_ACTION/);
   assert.equal(calls.length, 0);
   assert.equal((await dispatch(api, { action: "read", tabId: 7 })).documentId, "doc-7");
@@ -461,14 +570,14 @@ test("navigation in progress is distinguished from a site permission request", a
   await assert.rejects(dispatch(api, { action: "read", tabId: 7 }), /PAGE_LOADING/);
 });
 
-test("manifest has a fixed ID, optional site grants and no network-facing interface", async () => {
+test("manifest declares tab lookup, websites and local files at install with a fixed extension ID", async () => {
   const m = JSON.parse(await readFile(new URL("../chrome-control/extension/manifest.json", import.meta.url)));
   const hash = await webcrypto.subtle.digest("SHA-256", Buffer.from(m.key, "base64"));
   const id = Buffer.from(hash).toString("hex").slice(0, 32).replace(/./g, c => String.fromCharCode(97 + parseInt(c, 16)));
   assert.equal(id, "bijbehalbilfcmgoedjidbgmjjanokah");
-  assert.deepEqual(m.permissions.slice().sort(), ["activeTab", "nativeMessaging", "scripting", "storage"]);
-  assert.deepEqual(m.optional_host_permissions.slice().sort(), ["http://*/*", "https://*/*"]);
-  assert.ok(!m.host_permissions && !m.externally_connectable && !m.content_scripts);
+  assert.deepEqual(m.permissions.slice().sort(), ["activeTab", "nativeMessaging", "scripting", "storage", "tabs"]);
+  assert.deepEqual(m.host_permissions.slice().sort(), ["file:///*", "http://*/*", "https://*/*"]);
+  assert.ok(!m.optional_permissions && !m.optional_host_permissions && !m.externally_connectable && !m.content_scripts);
 });
 
 test("one site grant and one native port cover a sequence of commands until revoked", async () => {
@@ -497,9 +606,10 @@ test("one site grant and one native port cover a sequence of commands until revo
   globalThis.document = new JSDOM(popup).window.document;
   try {
     await import("../chrome-control/extension/worker.mjs");
-    const boot = api.runtime.onInstalled.fire();
+    const boot = api.runtime.onInstalled.fire({ reason: "update", previousVersion: "1.3.0" });
     await port.onMessage.fire({ type: "ready" });
     await boot;
+    assert.equal(shared.allSites, undefined);
     await api.runtime.onStartup.fire();
     const task = "task:7";
     const origin = new URL(url).origin;
@@ -538,6 +648,17 @@ test("one site grant and one native port cover a sequence of commands until revo
     grant.add("http://*/*");
     await api.permissions.onRemoved.fire({ origins: ["https://*/*"] });
     assert.notEqual(shared.allSites, true);
+    const excluded = "site:" + new URL(url).origin;
+    await api.runtime.onInstalled.fire({ reason: "update", previousVersion: "1.3.0" });
+    assert.notEqual(shared.allSites, true);
+    assert.equal(shared[excluded], false);
+    delete shared[excluded];
+    grant.add("https://*/*");
+    await api.runtime.onInstalled.fire({ reason: "install" });
+    assert.equal((await accessSettings(api)).allSites, true);
+    await api.runtime.onInstalled.fire({ reason: "update" });
+    assert.equal(shared.allSites, true);
+    assert.equal(prompts, 1);
   } finally {
     delete globalThis.chrome;
     delete globalThis.document;

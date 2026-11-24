@@ -147,11 +147,28 @@ class ReadUrlTest(unittest.TestCase):
                 self.assertEqual(len(calls), 3)
 
     def test_arguments_cannot_add_browser_actions(self):
-        for args in [(URL, "--focus"), (URL, "--focus", "x"), (URL, "-WaitText", " "), ("file:///C:/test",), ()]:
+        for args in [(URL, "--focus"), (URL, "--focus", "x"), (URL, "-WaitText", " "), ("C:/test",), ("javascript:test",), ()]:
             with self.subTest(arguments=args):
                 result, calls = self.run_reader([], arguments=args)
                 self.assertFalse(result["ok"])
                 self.assertEqual(calls, [])
+
+    def test_local_read_uses_an_already_open_file(self):
+        url = "file:///C:/example%20article.html"
+        replies = [{"ok": True, "data": {"tabId": 41, "requestedUrl": url, "siteShared": True}},
+                   chunk("本地", 0, 2, None, url=url)]
+        result, calls = self.run_reader(replies, arguments=(url,))
+        self.assertEqual(result["data"]["text"], "本地")
+        self.assertEqual(calls, [["open", url], ["read-start", "41"]])
+        result, _ = self.run_reader([{"ok": False, "error": "LOCAL_TAB_NOT_OPEN"}], arguments=(url,))
+        self.assertEqual(result["error"], "LOCAL_TAB_NOT_OPEN")
+
+    def test_internal_tab_handoff_preserves_the_actual_tab_id(self):
+        url = "chrome://settings/"
+        result, calls = self.run_reader([{"ok": True, "data": {"tabId": 41, "route": "browser-ui", "siteShared": False}}],
+                                        arguments=(url,))
+        self.assertEqual((result["error"], result["tabId"]), ("BROWSER_UI_REQUIRED", 41))
+        self.assertEqual(calls, [["open", url]])
 
 
 if __name__ == "__main__":

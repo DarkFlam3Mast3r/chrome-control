@@ -7,8 +7,10 @@ if ($args.Count -ne 1 -and ($args.Count -ne 3 -or $args[1] -ine '-WaitText' -or
     exit 2
 }
 $address = $null
-if (-not [Uri]::TryCreate($args[0], [UriKind]::Absolute, [ref]$address) -or
-    $address.Scheme -notin @('http', 'https') -or -not $address.Host -or $address.UserInfo) {
+if (-not [Uri]::TryCreate($args[0], [UriKind]::Absolute, [ref]$address) -or $address.UserInfo -or
+    $address.Scheme -notin @('http', 'https', 'file', 'chrome', 'chrome-extension', 'chrome-untrusted', 'about', 'blob', 'devtools', 'view-source') -or
+    ($address.Scheme -eq 'file' -and $args[0] -notmatch '^file://') -or
+    ($address.Scheme -in @('http', 'https') -and -not $address.Host)) {
     Write-Output '{"ok":false,"error":"WEB_URL_REQUIRED"}'
     exit 2
 }
@@ -33,6 +35,7 @@ $chromeTabId = $null
 try {
     $opened = Invoke-ChromeStep open $args[0]
     $chromeTabId = $opened.tabId
+    if ($opened.route -eq 'browser-ui') { throw 'BROWSER_UI_REQUIRED' }
     if (-not $opened.siteShared) { throw 'SITE_NOT_SHARED' }
     if ($null -eq $chromeTabId) { throw 'INVALID_TAB' }
 

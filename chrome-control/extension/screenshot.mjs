@@ -1,4 +1,4 @@
-import { accessSettings, siteAccess, siteKey, webUrl } from "./sites.mjs";
+import { accessSettings, fileAccess, fileUrl, siteAccess, siteKey, webUrl } from "./sites.mjs";
 
 export async function captureViewport(api, tab) {
   let changed = false;
@@ -22,8 +22,9 @@ export async function captureViewport(api, tab) {
       throw error;
     }
     const url = webUrl(tab.url);
-    const access = await siteAccess(api, url, await accessSettings(api, [siteKey(url)]));
-    if (access === "none" || !await stillSelected() || changed) throw new Error("SCREENSHOT_TARGET_CHANGED");
+    const allowed = fileUrl(tab.url) ? await fileAccess(api) :
+      url && await siteAccess(api, url, await accessSettings(api, [siteKey(url)])) !== "none";
+    if (!allowed || !await stillSelected() || changed) throw new Error("SCREENSHOT_TARGET_CHANGED");
     if (!png?.startsWith("data:image/png;base64,")) throw new Error("CAPTURE_FAILED");
     if (png.length > 24 * 1024 * 1024) throw new Error("SCREENSHOT_TOO_LARGE");
     return { url: tab.url, png };

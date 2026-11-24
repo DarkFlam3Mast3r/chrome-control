@@ -1,7 +1,7 @@
 """Real tab selection, page visibility and script injection in an empty Chromium test profile.
 
 Set CHROME_FOR_TESTING to a Chromium test binary that supports --load-extension.
-The temporary extension can access only the loopback fixture, and has no native host.
+The temporary profile contains only loopback pages, a test file and the test extension.
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -18,12 +18,15 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WORKER = """
 import { dispatch } from "./commands.mjs";
+import "./worker.mjs";
 const base = FIXTURE_ORIGIN;
+const file = FIXTURE_FILE;
 chrome.runtime.onInstalled.addListener(async () => {
   const call = command => dispatch(chrome, command);
   let result;
   try {
     await chrome.storage.local.set({ ["site:" + base]: true });
+    const allSites = (await call({action:"status"})).allSites;
     const writing = await chrome.tabs.create({url:base+"/writing",active:true});
     await call({action:"wait",tabId:writing.id,condition:"ready"});
     const switches = [];
@@ -60,11 +63,28 @@ chrome.runtime.onInstalled.addListener(async () => {
     const tail = await onArticle("read",{offset:first.nextOffset,documentId:first.documentId,snapshotId:first.snapshotId});
     const latest = await onArticle("read-start",{value:"NEW"});
     const latestTail = await onArticle("read",{offset:latest.nextOffset,documentId:latest.documentId,snapshotId:latest.snapshotId});
-    result = {stayed:front.id===writing.id, switches, read:read.text, wait:wait.matched,
+    const local = await chrome.tabs.create({url:file,active:false});
+    const localWait = await call({action:"read-start",tabId:local.id,value:"本地正文"});
+    const reusedFile = await call({action:"open-background",url:file});
+    const reader = await chrome.tabs.create({url:chrome.runtime.getURL("reader.html"),active:false});
+    async function located(url) {
+      for (let i=0;i<25;i++) {
+        const found = (await call({action:"locate",value:url})).tabs[0];
+        if (found) return found;
+        await new Promise(r=>setTimeout(r,100));
+      }
+      throw new Error("Missing named tab");
+    }
+    const readerRoute = await located(chrome.runtime.getURL("reader.html"));
+    const fileRoute = await located(file);
+    const blank = await located("about:blank");
+    result = {allSites,stayed:front.id===writing.id, switches, read:read.text, wait:wait.matched,
       selection:selection.text, reused:reuse.tabId===target.tabId, shot,
       samePendingTab:one.tabId===two.tabId && two.tabId===three.tabId, placeholder, loading,
       firstEdition:first.text+tail.text==="A".repeat(12000)+"OLD",
       nextEdition:latest.text+latestTail.text==="B".repeat(12000)+"NEW",
+      fileRead:localWait.text,fileReused:reusedFile.tabId===local.id,fileRoute:fileRoute.route,
+      readerLocated:readerRoute.id===reader.id && readerRoute.route==="browser-ui",blankRoute:blank.route,
       writerVisibility:(await state(writing.id))[0].result, readerVisibility:(await state(target.tabId))[0].result};
   } catch (e) { result = {error:e.message}; }
   await fetch(base+"/verdict",{method:"POST",body:JSON.stringify(result)});
@@ -133,14 +153,21 @@ class TabFocusTest(unittest.TestCase):
             folder = Path(tmp)
             extension = folder / "extension"
             extension.mkdir()
-            for name in ("commands.mjs", "sites.mjs", "page.mjs", "screenshot.mjs"):
-                shutil.copyfile(ROOT / "chrome-control/extension" / name, extension / name)
+            source = ROOT / "chrome-control/extension"
+            for name in ("commands.mjs", "sites.mjs", "targets.mjs", "page.mjs", "screenshot.mjs", "worker.mjs"):
+                shutil.copyfile(source / name, extension / name)
             base = "http://127.0.0.1:" + str(server.server_port)
+            shipped = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
             manifest = {"manifest_version": 3, "name": "Offline tab test", "version": "1.0",
-                        "permissions": ["storage", "scripting"], "host_permissions": ["http://127.0.0.1/*"],
+                        "permissions": [p for p in shipped["permissions"] if p != "nativeMessaging"],
+                        "host_permissions": shipped["host_permissions"],
                         "background": {"service_worker": "test.mjs", "type": "module"}}
             (extension / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (extension / "test.mjs").write_text(WORKER.replace("FIXTURE_ORIGIN", json.dumps(base)), encoding="utf-8")
+            local = folder / "本地 reader.html"
+            local.write_text('<meta charset="utf-8"><article>本地正文</article>', encoding="utf-8")
+            (extension / "reader.html").write_text("<title>Fixture reader</title>", encoding="ascii")
+            script = WORKER.replace("FIXTURE_ORIGIN", json.dumps(base)).replace("FIXTURE_FILE", json.dumps(local.as_uri()))
+            (extension / "test.mjs").write_text(script, encoding="utf-8")
             args = [executable, "--headless", "--no-first-run", "--no-default-browser-check",
                     "--disable-background-networking", "--disable-component-update", "--user-data-dir=" + str(folder / "profile"),
                     "--load-extension=" + str(extension), "about:blank"]
@@ -159,10 +186,12 @@ class TabFocusTest(unittest.TestCase):
             finally:
                 server.shutdown()
                 worker.join()
-            self.assertEqual(result, {"stayed": True, "switches": [], "read": "第一句，第二句是结尾。", "wait": True,
+            self.assertEqual(result, {"allSites": True, "stayed": True, "switches": [], "read": "第一句，第二句是结尾。", "wait": True,
                                      "selection": "第二句", "reused": True, "shot": "SCREENSHOT_TAB_NOT_VISIBLE",
                                      "samePendingTab": True, "placeholder": "CONTENT_NOT_READY", "loading": "loading",
                                      "firstEdition": True, "nextEdition": True,
+                                     "fileRead":"本地正文","fileReused":True,"fileRoute":"page",
+                                     "readerLocated":True,"blankRoute":"browser-ui",
                                      "writerVisibility": "visible", "readerVisibility": "hidden"})
 
 

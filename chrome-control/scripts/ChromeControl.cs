@@ -27,7 +27,7 @@ internal static class ChromeControl
     private static readonly string PipeName = PipePrefix + User.Value;
     private static readonly string HostMutex = @"Local\" + PipeName;
     private static readonly HashSet<string> QueuedReads = new HashSet<string>
-        { "status", "tabs", "read", "read-start", "wait", "controls", "check" };
+        { "status", "tabs", "locate", "read", "read-start", "wait", "controls", "check" };
     private static readonly ConcurrentDictionary<string, TaskCompletionSource<string>> Pending =
         new ConcurrentDictionary<string, TaskCompletionSource<string>>();
 
@@ -167,7 +167,7 @@ internal static class ChromeControl
         }
     }
 
-    private const string Usage = "status | tabs | open URL [--focus] | read-start TAB [TEXT] | read TAB [OFFSET [DOCUMENT [SNAPSHOT]]] | " +
+    private const string Usage = "status | tabs | locate [TITLE_OR_URL] | focus-tab TAB TITLE_OR_URL | open URL [--focus] | read-start TAB [TEXT] | read TAB [OFFSET [DOCUMENT [SNAPSHOT]]] | " +
         "controls TAB [OFFSET] | click TAB REF | fill TAB REF TEXT | check TAB REF TEXT | select TAB REF OPTION | scroll TAB up|down | " +
         "select-text TAB TEXT [OCCURRENCE] | wait TAB ready [MS] | wait TAB text|gone TEXT [MS] | " +
         "screenshot TAB OUTPUT.png | diff BEFORE.png AFTER.png [OUTPUT.png]";
@@ -186,6 +186,14 @@ internal static class ChromeControl
         var command = new Dictionary<string, object> { { "action", action } };
         switch (action)
         {
+            case "locate":
+                if (args.Length > 2) throw new ArgumentException(Usage);
+                if (args.Length == 2) command["value"] = args[1];
+                return command;
+            case "focus-tab":
+                if (args.Length != 3 || String.IsNullOrWhiteSpace(args[2])) throw new ArgumentException(Usage);
+                command["value"] = args[2];
+                break;
             case "status": case "tabs":
                 if (args.Length != 1) throw new ArgumentException(Usage);
                 return command;
@@ -316,7 +324,7 @@ internal static class ChromeControl
                     catch (Exception error) { return ImageError(error); }
                 }
                 if (!ok && Object.Equals(response["error"], "UNKNOWN_ACTION") &&
-                    (args[0] == "open" || args[0] == "read-start" || args[0] == "wait" || args[0] == "select-text" || args[0] == "screenshot"))
+                    (args[0] == "open" || args[0] == "locate" || args[0] == "focus-tab" || args[0] == "read-start" || args[0] == "wait" || args[0] == "select-text" || args[0] == "screenshot"))
                     reply = Json(new { ok = false, error = "EXTENSION_RELOAD_REQUIRED" });
                 Console.WriteLine(reply);
                 return ok ? 0 : 1;

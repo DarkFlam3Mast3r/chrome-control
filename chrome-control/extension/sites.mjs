@@ -1,4 +1,24 @@
 export const allWebOrigins = ["http://*/*", "https://*/*"];
+export const filePattern = "file:///*";
+
+export function fileUrl(value) {
+  if (typeof value !== "string" || !/^file:\/\//i.test(value)) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "file:" && !url.username && !url.password ? url : null;
+  } catch { return null; }
+}
+
+export async function fileAccess(api) {
+  return await api.permissions.contains({ origins: [filePattern] }) && await api.extension.isAllowedFileSchemeAccess();
+}
+
+export async function requireFileAccess(api) {
+  if (await fileAccess(api)) return;
+  const error = new Error("FILE_ACCESS_REQUIRED");
+  error.detail = "在「Chrome 网页控制」的扩展详情中开启「允许访问文件网址」，然后重试。";
+  throw error;
+}
 
 export function webUrl(value) {
   try {
