@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Chrome 网页控制</title>
+<style>
+  :root { color-scheme: light dark; font: 14px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif; }
+  body { width: 280px; margin: 16px; }
+  h1 { margin: 0; font-size: 17px; }
+  p { margin: 8px 0 12px; overflow-wrap: anywhere; }
+  .default-access { display: flex; align-items: center; gap: 6px; margin-top: 12px; font-weight: 600; }
+  input[type="checkbox"] { accent-color: #135c54; }
+  button { padding: 6px 12px; font: inherit; border-radius: 6px; cursor: pointer; }
+  #toggle { background: #135c54; color: white; border: 1px solid #135c54; }
+  button:disabled { opacity: .55; cursor: default; }
+  footer { border-top: 1px solid #8886; margin-top: 16px; padding-top: 12px; }
+</style>
+<h1>网站访问</h1>
+<label class="default-access"><input type="checkbox" id="all-sites" aria-describedby="default-help" disabled>默认允许所有网站</label>
+<p id="default-help">允许本机 Codex 读取和操作当前网页，包括已登录的网站。Codex 也可以在后台打开你给的链接，等内容加载后读取正文、选中句子。</p>
+<p id="origin">正在识别当前网站…</p>
+<button id="toggle" disabled>允许此网站</button>
+<p role="status" id="scope"></p>
+<footer><div id="connection" role="status">正在连接本机…</div>
+<button id="retry" hidden>重新连接</button></footer>
+<script type="module" src="popup.mjs"></script>
+</html>

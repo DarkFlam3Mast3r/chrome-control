@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "109",
+  "name": "Chrome 网页控制",
+  "version": "1.2.1",
+  "description": "让本机 Codex 在你允许的网站读取正文、点击和填写。",
+  "icons": {
+    "16": "icons/tab-pointer-16.png",
+    "32": "icons/tab-pointer-32.png",
+    "48": "icons/tab-pointer-48.png",
+    "128": "icons/tab-pointer-128.png"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA37Av0R9BDoitjD3zhARnrdwFm5yKimOlqNdqvdUgWYeRLy4BwC5UOXVaAsLDexP64kUiKKfyfvzDaMDWq5v4qKO9XV03Cr6inGLxWy/ietVMR4CnAc8yt7BWDK1K7ADXEzXawy4euHimdsG7K/SLRE9jDnTOn2VJvYra2rlXvYpf9q7Xm9b0JUAmAWDxv9pSK23FcpuXJ1KdU2JPCGkhkoiGloV84FL2kPQE1VwwHzJ0WO55d2z/f5GdSOkKz62E9HBQ32w52qYApw0WRS+k1VeCB7AUF6V1w+rxE7tTYMPeXsqH45PToMVI/ANhc3j3LvkV086U6FEDhche3UoFsQIDAQAB",
+  "permissions": ["activeTab", "nativeMessaging", "scripting", "storage"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "incognito": "not_allowed",
+  "action": {
+    "default_icon": {
+      "16": "icons/tab-pointer-16.png",
+      "20": "icons/tab-pointer-20.png",
+      "24": "icons/tab-pointer-24.png",
+      "32": "icons/tab-pointer-32.png",
+      "48": "icons/tab-pointer-48.png"
+    },
+    "default_popup": "popup.html",
+    "default_title": "管理此网站的 Codex 访问"
+  },
+  "background": { "service_worker": "worker.mjs", "type": "module" }
+}

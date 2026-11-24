@@ -1,0 +1,6 @@
+{
+  "name": "chrome-control-tests",
+  "private": true,
+  "scripts": { "test": "node --test extension.test.mjs" },
+  "devDependencies": { "jsdom": "26.1.0" }
+}

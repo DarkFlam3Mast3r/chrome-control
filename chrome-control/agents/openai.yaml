@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chrome 网页控制"
+  short_description: "在已登录的 Chrome 中后台打开并读取网页、选句、操作控件和对比截图"
+  default_prompt: "用 $chrome-control 在我的 Chrome 中读取这个网页，并按我的要求操作。"
